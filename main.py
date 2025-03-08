@@ -1,9 +1,10 @@
-import os
 import time
 import logging
-import pandas as pd
 import torch
-import datetime
+from quadtree import InitialQuadtree
+
+# Created an object of classes.
+quad = InitialQuadtree()
 
 # Importing Customized Classes.
 from preprocess import Preprocess as prp
@@ -33,9 +34,8 @@ if __name__ == "__main__":
     # Load and preprocess the data.
     df = prp.load_and_preprocess_data(path, required_columns)
 
-    # Print the data types to the console.
-    print("\nData types before verification:")
-    print(df.dtypes)
+    # # Print the data types to the console.
+    # print("\nData types before verification:")
 
     # Verify data types for the required columns.
     if df is not None:
@@ -45,7 +45,6 @@ if __name__ == "__main__":
 
     # Print the data types to the console.
     print("\nData types after verification:")
-    print(df.dtypes)
 
     # Sort the data by 'Date' in ascending order
     df = df.sort_values(by='Date', ascending=True)
@@ -55,18 +54,26 @@ if __name__ == "__main__":
     end_date = '2022-12-31'
     df = prp.get_sample_data(df, start_date, end_date)
 
-    df = prp.create_date_features(df)
-
     df = prp.add_daily_crime_count(df)
 
-    # Display the first few rows for verification.
-    print(df)
+    df = prp.create_date_features(df)
+
+    # Step 6: Data Split and Added Prediction Column with Zero Value.
+    train_df, val_df = prp.train_test_df_split(df, train_size=0.8)
+    train_df = quad.set_pred_zero(train_df)
+    # val_df = quad.set_pred_zero(val_df)
+
+    print(f'Training Dataset: \n {train_df}')
+
+    print(f'Validation Dataset: \n {val_df}')
 
     print(df.columns)
 
-    print(list(df.columns))
 
-    print(df.dtypes)
+############################# Create Quadtree #############################
+
+    # Step 7: Create Quadtree.
+    quadtree = quad.init_quadtree(train_df)
 
     # Time Count End.
     elapsed_time = time.time() - start_time

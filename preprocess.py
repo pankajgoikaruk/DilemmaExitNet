@@ -4,6 +4,10 @@ import torch
 import os
 import datetime
 from pandas.tseries.holiday import USFederalHolidayCalendar
+from sklearn.preprocessing import MinMaxScaler
+
+# Initialize the MinMaxScaler to scale features to the range [0, 1]
+scaler = MinMaxScaler(feature_range=(0, 1))
 
 
 class Preprocess:
@@ -11,6 +15,7 @@ class Preprocess:
         pass
 
     # Split datetime it into separate "Date" and "Time" columns.
+    @staticmethod
     def standardize_column_names(df):
         """
         Standardizes column names for date, time, longitude, and latitude.
@@ -83,6 +88,7 @@ class Preprocess:
         return df
 
     # Load dataset.
+    @staticmethod
     def load_and_preprocess_data(path, required_columns):
         """
         Loads data from a CSV file and performs preprocessing:
@@ -134,6 +140,7 @@ class Preprocess:
             return None
 
     # Verify data type of date and coordinates and also create new temporal features.
+    @staticmethod
     def verify_data_types(df):
         """
         Verifies that:
@@ -211,15 +218,16 @@ class Preprocess:
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 
         # Calculate daily crime count
-        daily_counts = df.groupby("Date").size().reset_index(name="crime_count")
+        daily_counts = df.groupby("Date").size().reset_index(name="Crime_count")
 
         # Merge with original DataFrame
         df = df.merge(daily_counts, on="Date", how="left")
 
-        logging.info("Successfully added 'crime_count' column.")
+        logging.info("Successfully added 'Crime_count' column.")
         return df
 
     # Extracts multiple features from the 'Date' column to enhance model learning.
+    @staticmethod
     def create_date_features(df):
         """
         Features Created:
@@ -235,12 +243,17 @@ class Preprocess:
           - Days_Since_Start (days since the start of the dataset)
         """
 
+        # Reset Index to add index column
+        df.reset_index(inplace=True)
+
         if "Date" not in df.columns:
             raise KeyError("The dataframe must contain a 'Date' column.")
 
         # Ensure 'Date' is in datetime format
         if df["Date"].dtype != "datetime64[ns]":
             df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
+
+        df[['Scl_Longitude', 'Scl_Latitude']] = scaler.fit_transform(df[['Longitude', 'Latitude']])
 
         # Extract date-based features
         df["Day_of_Week"] = df["Date"].dt.dayofweek  # 0=Monday, 6=Sunday
@@ -270,8 +283,29 @@ class Preprocess:
                 return "Fall"
 
         df["Season"] = df["Month"].apply(get_season)
+        # One-Hot Encoding.
+        df = pd.get_dummies(df, columns=["Season"], prefix="Season")
+
+        # Rearrange columns
+        df = df[['index', 'Date', 'Time', 'Longitude', 'Latitude', 'Hour', 'Minute',
+                 'Second', 'Scl_Longitude', 'Scl_Latitude', 'Day_of_Week', 'Is_Weekend',
+                 'Day_of_Month', 'Day_of_Year', 'Month', 'Quarter', 'Year', 'Week_of_Year',
+                 'Days_Since_Start', 'Is_Holiday', 'Season_Fall', 'Season_Spring',
+                 'Season_Summer', 'Season_Winter', 'Crime_count']]
 
         return df
+
+    # Data split for training and testing.
+    @staticmethod
+    def train_test_df_split(df, train_size):
+        train_per = train_size
+
+        split_index = int(len(df) * train_per)
+
+        train_df = df[:split_index]
+        val_df = df[split_index:]
+
+        return train_df, val_df
 
 
 
