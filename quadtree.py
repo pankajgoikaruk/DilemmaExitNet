@@ -1,6 +1,26 @@
+import os
+import logging
 import pandas as pd
 import math
 from sklearn.preprocessing import MinMaxScaler
+
+
+def setup_directories(dir_list):
+    """
+    Create directories if they do not exist.
+    """
+    for directory in dir_list:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+            logging.info(f"Created directory: {directory}")
+
+
+# Define directories.
+dcr_dir_csv = 'node_pred_dir_csv'
+output_dir_csv = 'output_csv'
+model_saved = 'model_saved'
+setup_directories([dcr_dir_csv, output_dir_csv, model_saved])
+
 
 class InitialQuadtree:
     def __init__(self) -> None:
@@ -9,19 +29,64 @@ class InitialQuadtree:
     # Modeling to generated prediction values.
     @staticmethod
     def set_pred_zero(df):
-        df['Date'] = Quadtree.datetime_to_unix_timestamps(df)
-        df['Crime_count'] = Quadtree.min_max_scale_values(df, col_name='Crime_count').round()
-        df['Prediction'] = 0
+        df = df.copy()  # Prevent modification on a slice
+        df.loc[:, 'Date'] = Quadtree.datetime_to_unix_timestamps(df)
+        df.loc[:, 'Crime_count'] = Quadtree.min_max_scale_values(df, col_name='Crime_count').round()
+        df.loc[:, 'Prediction'] = 0
         return df
+
 
     @staticmethod
     def init_quadtree(df):
-        n = len(df)
-        # Heuristic for max_points: use square root of n, with a minimum value
-        default_max_points = max(4, int(math.sqrt(n)))
+        # n = len(df)
+        # # Heuristic for max_points: use square root of n, with a minimum value.
+        # default_max_points = max(4, int(math.sqrt(n)))
+        #
+        # print(f"Recommended maximum points per node: {default_max_points}")
+        #
+        # # Prompt the user for maximum number of points per node.
+        # while True:
+        #     try:
+        #         user_input = input("Enter the maximum number of points per node [Press Enter to accept default]: ")
+        #         if user_input == "":
+        #             max_points = default_max_points
+        #         else:
+        #             max_points = int(user_input)
+        #             if max_points < default_max_points:
+        #                 print(f"Please enter a value greater than or equal to {default_max_points}.")
+        #                 continue
+        #         break
+        #     except ValueError:
+        #         print("Please enter a positive integer value.")
+        #
+        # # Now compute default_max_levels based on worst-case scenario:
+        # default_max_levels = max(3, math.ceil(n / max_points))
+        # print(f"Recommended maximum quadtree levels (worst-case): {default_max_levels}")
+        #
+        # # Prompt the user for maximum number of quadtree levels.
+        # while True:
+        #     try:
+        #         user_input = input(
+        #             "Enter the maximum number of levels in the quadtree [Press Enter to accept default]: ")
+        #         if user_input == "":
+        #             max_levels = default_max_levels
+        #         else:
+        #             max_levels = int(user_input)
+        #             if max_levels <= 1:
+        #                 raise ValueError
+        #         break
+        #     except ValueError:
+        #         print("Please enter a positive integer greater than 1 for maximum levels.")
 
-        # Heuristic for max_levels: use logarithm base 4 of n, with a minimum value
-        default_max_levels = max(3, int(math.log(n, 4))) if n > 0 else 3
+        n = len(df)
+        # Alternative heuristic: use a fraction of n for max_points
+        default_max_points = max(1000,
+                                 int(n / 50))  # The default maximum number of points per node is the larger of 100 and 𝑛/500
+        # (rounded down). The default maximum levels is the larger of 3 and the
+        #  ceiling of the ratio 𝑛/default_max_points.
+
+        # Compute default_max_levels based on worst-case scenario
+        default_max_levels = max(5, math.ceil(n / default_max_points))
 
         print(f"Recommended maximum points per node: {default_max_points}")
         print(f"Recommended maximum quadtree levels: {default_max_levels}")
@@ -29,11 +94,11 @@ class InitialQuadtree:
         # Prompt the user for maximum number of points per node, with a default recommendation.
         while True:
             try:
-                max_points = input(f"Enter the maximum number of points per node: or [Press Enter to accept default]: ")
-                if max_points == "":
+                user_input = input("Enter the maximum number of points per node [Press Enter to accept default]: ")
+                if user_input == "":
                     max_points = default_max_points
                 else:
-                    max_points = int(max_points)
+                    max_points = int(user_input)
                     if max_points < default_max_points:
                         print(f"Please enter a value greater than or equal to {default_max_points}.")
                         continue
@@ -44,11 +109,12 @@ class InitialQuadtree:
         # Prompt the user for maximum number of quadtree levels, with a default recommendation.
         while True:
             try:
-                max_levels = input("Enter the maximum number of levels in the quadtree: or [Press Enter to accept default]: ")
-                if max_levels == "":
+                user_input = input(
+                    "Enter the maximum number of levels in the quadtree [Press Enter to accept default]: ")
+                if user_input == "":
                     max_levels = default_max_levels
                 else:
-                    max_levels = int(max_levels)
+                    max_levels = int(user_input)
                     if max_levels <= 1:
                         raise ValueError
                 break
@@ -68,11 +134,11 @@ class InitialQuadtree:
         # Iterates over the dataset and extracts relevant data points such as longitude, latitude, index, and other
         # features. Extract data points from Longitude and Latitude columns and insert them into the quadtree
         for label, row in df.iterrows():
+            x = row['Longitude']
+            y = row['Latitude']
             index = row['index']
             Date = row['Date']
             Time = row['Time']
-            x = row['Longitude']
-            y = row['Latitude']
             Hour = row['Hour']
             Minute = row['Minute']
             Second = row['Second']
@@ -96,7 +162,7 @@ class InitialQuadtree:
             Prediction = row['Prediction']
 
             # Creates a Point object for each data point with the extracted features and inserts it into the quadtree.
-            point = Point(index, Date, Time, x, y, Hour, Minute, Second, Scl_Longitude, Scl_Latitude,
+            point = Point(x, y, index, Date, Time, Hour, Minute, Second, Scl_Longitude, Scl_Latitude,
                           Day_of_Week, Is_Weekend, Day_of_Month, Day_of_Year, Month, Quarter, Year, Week_of_Year,
                           Days_Since_Start, Is_Holiday, Season_Fall, Season_Spring, Season_Summer, Season_Winter,
                           Crime_count, Prediction)
@@ -105,6 +171,7 @@ class InitialQuadtree:
 
             # Returns the initialized quadtree.
         return quadtree
+
 
 # Represents a point with various attributes such as coordinates (x and y) and additional information related to
 # crime data (Date, Scl_Longitude, etc.).
@@ -140,10 +207,12 @@ class Point:
         self.Crime_count = Crime_count
         self.Prediction = Prediction
 
+
 """ 
 Represents a rectangle with bottom-left and top-right corner coordinates. It provides methods to check if a point
 lies within the rectangle (contains_point) and if it intersects with another rectangle (intersects).
 """
+
 
 class Rectangle:
     def __init__(self, x1, y1, x2, y2):
@@ -160,12 +229,15 @@ class Rectangle:
     def intersects(self, other):
         return not (self.x2 < other.x1 or self.x1 > other.x2 or self.y2 < other.y1 or self.y1 > other.y2)
 
+
 """
 Represents the quadtree data structure. It is initialized with a boundary rectangle, maximum number of points per 
 node (max_points), and maximum depth (max_levels). The quadtree is recursively divided into four quadrants until each 
 quadrant contains no more than max_points or reaches the maximum depth. It provides methods to insert points into the 
 quadtree (insert), subdivide a node into quadrants (subdivide), and check if a node is a leaf node (is_leaf).
 """
+
+
 class Quadtree:
     def __init__(self, boundary, max_points=None, max_levels=None, node_id=0,
                  root_node=None,
@@ -200,6 +272,10 @@ class Quadtree:
             raise ValueError("Boundary must be a Rectangle object")
 
     def insert(self, point, node_id=0):  # Added node_id argument for recursive calls
+        # Check if max_levels is exceeded before inserting
+        if self.node_level >= self.max_levels:
+            return False  # Stop insertion at this level
+
         # Check Boundary: Check if the point is within the boundary of the current node
         if not self.boundary.contains_point(point.x, point.y):
             return False
@@ -211,7 +287,7 @@ class Quadtree:
             return True
 
         # Subdivide Node: If the current node is a leaf node, or it's full, subdivide it
-        if not self.children:
+        if not self.children and self.node_level < self.max_levels:
             self.subdivide()
 
         # Insert into Child Nodes: Attempt to insert the point into the child nodes
@@ -219,7 +295,10 @@ class Quadtree:
             if child.boundary.contains_point(point.x, point.y):
                 child.insert(point, child.node_id)  # Pass current node ID to child
 
+        return False  # If no child can accept the point
+
     def subdivide(self):
+
         # Calculate the dimensions of each child node
         x_mid = (self.boundary.x1 + self.boundary.x2) / 2
         y_mid = (self.boundary.y1 + self.boundary.y2) / 2
@@ -284,7 +363,9 @@ class Quadtree:
             )
             self.children.append(child)
 
-        # Insert all points stored in temp_points into the appropriate child.
+        # print(f"Splitting at depth {self.node_level}, max_levels: {self.max_levels}")
+
+        # Distribute points to children (Insert all points stored in temp_points into the appropriate child).
         for point in self.temp_points:
             for child in self.children:
                 if child.boundary.contains_point(point.x, point.y):
@@ -313,21 +394,27 @@ class Quadtree:
     # Convert a datetime format to Unix timestamp.
     @staticmethod
     def datetime_to_unix_timestamps(df):
-        # pd.to_datetime(df['Date']) # 7/3/2025
-        df['Date'] = df['Date'].astype('int64') // 10 ** 9
+        # df['Date'] = df['Date'].astype('int64') // 10 ** 9
+        df = df.copy()  # Avoid modifying a view
+        df.loc[:, 'Date'] = pd.to_datetime(df['Date'])  # Ensure Date is in datetime format
+        df.loc[:, 'Date'] = df['Date'].astype('int64') // 10 ** 9  # Convert to Unix timestamp explicitly
+        df.loc[:, 'Date'] = df['Date'].astype('int64')  # Ensure final dtype is int64
         return df['Date']
 
     # Scale down the target and predicted values
     @staticmethod
     def min_max_scale_values(df, col_name):
+        df = df.copy()  # Prevent modification on a slice
         # Reshape the column values to a 2D array
-        col_counts = df[col_name].values.reshape(-1, 1) # -1 means NumPy figure out the number of the rows automatically.
-                                                        # 1 means keep a single column.
+        col_counts = df[col_name].values.reshape(-1,
+                                                 1)  # -1 means NumPy figure out the number of the rows automatically.
+        # 1 means keep a single column.
         # Initialize the scaler
         min_max_scaler = MinMaxScaler(feature_range=(100, 105))
 
         # Fit and transform the column values
-        df[col_name] = min_max_scaler.fit_transform(col_counts)
+        # df[col_name] = min_max_scaler.fit_transform(col_counts)
+        df.loc[:, col_name] = min_max_scaler.fit_transform(col_counts).astype(int)
 
         # Return the scaled column (avoiding direct modification of df)
         return df[col_name]  # Convert back to 1D

@@ -24,8 +24,8 @@ class Preprocess:
         """
         # Mapping of standard column names to possible synonyms (using lowercase for matching)
         column_aliases = {
-            "Date": ["date", "incident_date", "occurrence_date", "reported_date", "datetime", "date_time", "timestamp"],
-            "Time": ["time", "incident_time", "reported_time"],
+            "Date": ["date", "incident_date", "occurrence_date", "reported_date", "datetime", "date_time", "timestamp", "CMPLNT_FR_DT"],
+            "Time": ["time", "incident_time", "reported_time", "CMPLNT_FR_TM"],
             "Longitude": ["longitude", "long", "lng", "x_coordinate", "x"],
             "Latitude": ["latitude", "lat", "y_coordinate", "y"]
         }

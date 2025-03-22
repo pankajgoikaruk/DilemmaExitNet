@@ -1,13 +1,11 @@
 import time
 import logging
 import torch
-from quadtree import InitialQuadtree
-
-# Created an object of classes.
-quad = InitialQuadtree()
 
 # Importing Customized Classes.
 from preprocess import Preprocess as prp
+from quadtree import InitialQuadtree as quad
+from visualise import Visualise as vis
 
 # Configure logging to display time, level, and message
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,8 +23,8 @@ if __name__ == "__main__":
     start_time = time.time()
 
     # Define the path to your CSV file.
-    path = "C:/Users/wwwsa/PycharmProjects/Chicago_Crime_Data/Chicago_Crime_2001_to_2024.csv"
-    # path = "C:/Users/wwwsa/PycharmProjects/NYC_Crime_Data/USA_Crime_2008_to_2017.csv"
+    # path = "C:/Users/wwwsa/PycharmProjects/Chicago_Crime_Data/Chicago_Crime_2001_to_2024.csv"
+    path = "C:/Users/wwwsa/PycharmProjects/NYC_Crime_Data/USA_Crime_2008_to_2017.csv"
 
     # Specify the required standardized columns.
     required_columns = ['Date', 'Time', 'Longitude', 'Latitude']
@@ -50,9 +48,12 @@ if __name__ == "__main__":
     df = df.sort_values(by='Date', ascending=True)
 
     # Optional: Get sample data.
-    start_date = '2021-01-01'
-    end_date = '2022-12-31'
+    start_date = '2015-01-01'
+    end_date = '2016-12-31'
     df = prp.get_sample_data(df, start_date, end_date)
+
+    if df.empty:
+        raise ValueError("DataFrame is empty after after getting sample data choose past years.!")
 
     df = prp.add_daily_crime_count(df)
 
@@ -74,6 +75,9 @@ if __name__ == "__main__":
 
     # Step 7: Create Quadtree.
     quadtree = quad.init_quadtree(train_df)
+
+    # Step 10: Visualise the quadtree
+    vis.visualize_quadtree(quadtree)
 
     # Time Count End.
     elapsed_time = time.time() - start_time
