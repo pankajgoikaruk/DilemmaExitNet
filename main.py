@@ -79,7 +79,7 @@ if __name__ == "__main__":
     print(f"train_df Crime_count summary: {train_df['Crime_count'].describe()}")
     print(f"train_df Crime_count NaN count: {train_df['Crime_count'].isna().sum()}")
 
-    # Step 7: Create Quadtree.
+    # Step 7: Create Adaptive Quadtree.
     quadtree = quad.init_quadtree(train_df)
 
     # Step 10: Visualise the quadtree

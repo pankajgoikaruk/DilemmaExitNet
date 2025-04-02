@@ -4,6 +4,8 @@ import pandas as pd
 import math
 from sklearn.preprocessing import MinMaxScaler
 
+# Adaptive max_points and max_levels
+
 def crime_density(points, self):
     """
     Calculate max_points based on crime count variance.
