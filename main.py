@@ -49,7 +49,7 @@ if __name__ == "__main__":
 
     # Optional: Get sample data.
     start_date = '2015-01-01'
-    end_date = '2016-12-31'
+    end_date = '2020-12-31'
     df = prp.get_sample_data(df, start_date, end_date)
 
     if df.empty:
@@ -64,20 +64,30 @@ if __name__ == "__main__":
     train_df = quad.set_pred_zero(train_df)
     # val_df = quad.set_pred_zero(val_df)
 
+    train_df['Crime_count'] = train_df['Crime_count'].fillna(0)
+    val_df['Crime_count'] = val_df['Crime_count'].fillna(0)
+
     print(f'Training Dataset: \n {train_df}')
 
     print(f'Validation Dataset: \n {val_df}')
 
-    print(df.columns)
+    print(train_df.columns)
 
 
 ############################# Create Quadtree #############################
+
+    print(f"train_df Crime_count summary: {train_df['Crime_count'].describe()}")
+    print(f"train_df Crime_count NaN count: {train_df['Crime_count'].isna().sum()}")
 
     # Step 7: Create Quadtree.
     quadtree = quad.init_quadtree(train_df)
 
     # Step 10: Visualise the quadtree
     vis.visualize_quadtree(quadtree)
+
+    # # After quadtree creation
+    # quadtree.compute_stats()
+    # logging.info("Computed node statistics.")
 
     # Time Count End.
     elapsed_time = time.time() - start_time
