@@ -6,48 +6,97 @@ from sklearn.preprocessing import MinMaxScaler
 
 # Adaptive max_points and max_levels
 
+# def crime_density(points, self):
+#     """
+#     Calculate max_points based on crime count variance.
+#     - High variance -> lower max_points (finer split in high-activity areas).
+#     - Low variance -> higher max_points (coarser split in uniform areas).
+#     """
+#     if not points:
+#         return 1000  # Default for empty nodes
+#     crime_counts = [p.Crime_count for p in points]
+#     variance = pd.Series(crime_counts).var()
+#     if pd.isna(variance):  # Handle NaN variance (0 or 1 point)
+#         logging.info(f"Node with {len(points)} points has NaN variance, using default max_points=1000")
+#         return 1000  # Default value when variance can’t be computed
+#     logging.info(f"Crime_count variance: {variance}")
+#     n_points_total = self.n_total # Use total dataset size.
+#     max_cap = max(1000, min(50000, int(n_points_total / 10)))  # Scale cap with dataset size
+#     # Base max_points between 500 and 2000, inversely proportional to variance
+#     # base_max = max(500, min(max_cap, int(5000 / (1 + variance / 2) + len(points))))  # Increasing 5000 value will increase the value of max_points. Increase base, reduce variance impact, increase point contribution
+#     base_max = max(500, min(max_cap, int(2000 / (1 + variance / 2) + len(
+#         points) / 2)))  # Reduced from 5000 to 2000, added len(points)/ to make max_points more adaptive to the actual number of points in the node, encouraging subdivision in denser areas.
+#     logging.info(f"Computed max_points: {base_max}, max_cap: {max_cap}")
+#     return base_max
+
+
 def crime_density(points, self):
     """
-    Calculate max_points based on crime count variance.
-    - High variance -> lower max_points (finer split in high-activity areas).
-    - Low variance -> higher max_points (coarser split in uniform areas).
-    """
+    #     Calculate max_points based on crime count variance.
+    #     - High variance -> lower max_points (finer split in high-activity areas).
+    #     - Low variance -> higher max_points (coarser split in uniform areas).
+    #     """
+
     if not points:
-        return 1000  # Default for empty nodes
+        return self.alpha  # e.g., 1000
+
     crime_counts = [p.Crime_count for p in points]
     variance = pd.Series(crime_counts).var()
-    if pd.isna(variance):  # Handle NaN variance (0 or 1 point)
-        logging.info(f"Node with {len(points)} points has NaN variance, using default max_points=1000")
-        return 1000  # Default value when variance can’t be computed
+    if pd.isna(variance):
+        logging.info(f"Node with {len(points)} points has NaN variance, using default max_points={self.alpha}")
+        return self.alpha
     logging.info(f"Crime_count variance: {variance}")
-    n_points_total = self.n_total # Use total dataset size.
-    max_cap = max(1000, min(50000, int(n_points_total / 10)))  # Scale cap with dataset size
-    # Base max_points between 500 and 2000, inversely proportional to variance
-    # base_max = max(500, min(max_cap, int(5000 / (1 + variance / 2) + len(points))))  # Increasing 5000 value will increase the value of max_points. Increase base, reduce variance impact, increase point contribution
-    base_max = max(500, min(max_cap, int(2000 / (1 + variance / 2) + len(
-        points) / 2)))  # Reduced from 5000 to 2000, added len(points)/ to make max_points more adaptive to the actual number of points in the node, encouraging subdivision in denser areas.
+    n_points_total = self.n_total
+    max_cap = max(self.alpha, min(self.kappa, int(n_points_total / self.lambda_val)))  # e.g., alpha=1000, kappa=50000, lambda_val=10
+    base_max = max(self.min_base, min(max_cap, int(self.beta / (1 + variance / self.gamma) + len(points) / self.delta)))  # e.g., min_base=500, beta=2000, gamma=2, delta=2
     logging.info(f"Computed max_points: {base_max}, max_cap: {max_cap}")
     return base_max
 
 
 def adaptive_max_levels(points, self):
     """
-    Calculate max_levels based on crime count variance.
+    Calculate max_levels adaptively based on dataset size and crime count variance.
     - High variance -> higher max_levels (deeper tree for complex areas).
     - Low variance -> lower max_levels (shallower tree for uniform areas).
+    - Scales with log of dataset size and variance for deeper trees in complex datasets.
+    - Uses an adaptive cap (mu) to ensure scalability for very large datasets.
     """
     if not points:
         return 5  # Default for empty nodes
+
+    # Total number of points
+    n_points_total = self.n_total
+
+    # Compute variance of Crime_count
     crime_counts = [p.Crime_count for p in points]
-    variance = pd.Series(crime_counts).var()
+    variance = pd.Series(crime_counts).var() if crime_counts else 0.0
     if pd.isna(variance):  # Handle NaN variance
         return 5  # Default when variance can’t be computed
-    n_points_total = self.n_total
-    max_depth = max(5, min(25, int(math.log2(n_points_total) + 1)))  # Scale depth with log of size
-    # Base max_levels, proportional to variance
-    base_max = max(5, min(max_depth, int(5 + variance / 50 + math.log2(n_points_total) / 2)))
-    logging.info(f"Computed max_levels: {base_max}, variance: {variance}, n_points_total: {n_points_total}")
-    return base_max
+
+    # Adaptive mu based on dataset size
+    eta = 1.5  # Scaling factor
+    mu = int(eta * math.log2(n_points_total)) if n_points_total > 0 else 5
+
+    # Compute max_levels: combine log of dataset size and variance, capped by mu
+    computed_levels = int(math.log2(n_points_total) + 1 + variance) if n_points_total > 0 else 5
+    max_levels = min(mu, computed_levels)
+
+    # Ensure a minimum depth for small datasets
+    max_levels = max(5, max_levels)
+
+    logging.info(f"Computed max_levels: {max_levels}, variance: {variance}, n_points_total: {n_points_total}")
+    return max_levels
+
+    # crime_counts = [p.Crime_count for p in points]
+    # variance = pd.Series(crime_counts).var()
+    # if pd.isna(variance):  # Handle NaN variance
+    #     return 5  # Default when variance can’t be computed
+    # n_points_total = self.n_total
+    # max_depth = max(5, min(25, int(math.log2(n_points_total) + 1)))  # Scale depth with log of size
+    # # Base max_levels, proportional to variance
+    # base_max = max(5, min(max_depth, int(5 + variance / 50 + math.log2(n_points_total) / 2)))
+    # logging.info(f"Computed max_levels: {base_max}, variance: {variance}, n_points_total: {n_points_total}")
+    # return base_max
 
 
 
@@ -240,7 +289,8 @@ quadtree (insert), subdivide a node into quadrants (subdivide), and check if a n
 
 class Quadtree:
     def __init__(self, boundary, max_points=None, max_levels=None, density_func=None, max_levels_func=None,
-                 node_id=0, root_node=None, node_level=0, parent=None, df=None, ex_time=None, n_total=None):
+                 node_id=0, root_node=None, node_level=0, parent=None, df=None, ex_time=None, n_total=None,
+                 alpha=1000, kappa=50000, lambda_val=10, min_base=500, beta=2000, gamma=2, delta=2):
 
         self.model = None  # To hold the current model while traversal through quadtree.
         self.boundary = boundary  # Stores the boundary rectangle of the quadtree.
@@ -256,6 +306,15 @@ class Quadtree:
         self.ex_time = ex_time  # To store execution time of each node.
         self.evaluation_results = []  # Initialize an empty list to store evaluation results
         self.n_total = n_total  # Store dataset size
+
+        # Symbolic constants with default values
+        self.alpha = alpha  # Default for empty nodes or NaN variance
+        self.kappa = kappa  # Upper cap for max_points
+        self.lambda_val = lambda_val  # Scaling factor for max_cap
+        self.min_base = min_base  # Lower bound for base_max
+        self.beta = beta  # Base value for variance scaling
+        self.gamma = gamma  # Variance scaling factor
+        self.delta = delta  # Point count scaling factor
 
         # Set adaptive values after points is defined
         self.max_points = max_points if max_points is not None else (
