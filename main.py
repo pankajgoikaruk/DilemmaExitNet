@@ -4,8 +4,9 @@ import torch
 
 # Importing Customized Classes.
 from preprocess import Preprocess as prp
-from quadtree import InitialQuadtree as quad
+from quadtree import InitialQuadtree as initquad
 from visualise import Visualise as vis
+import quadtree as quad
 
 # Configure logging to display time, level, and message
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -61,8 +62,8 @@ if __name__ == "__main__":
 
     # Step 6: Data Split and Added Prediction Column with Zero Value.
     train_df, val_df = prp.train_test_df_split(df, train_size=0.8)
-    train_df = quad.set_pred_zero(train_df)
-    # val_df = quad.set_pred_zero(val_df)
+    train_df = initquad.set_pred_zero(train_df)
+    # val_df = initquad.set_pred_zero(val_df)
 
     train_df['Crime_count'] = train_df['Crime_count'].fillna(0)
     val_df['Crime_count'] = val_df['Crime_count'].fillna(0)
@@ -79,8 +80,11 @@ if __name__ == "__main__":
     print(f"train_df Crime_count summary: {train_df['Crime_count'].describe()}")
     print(f"train_df Crime_count NaN count: {train_df['Crime_count'].isna().sum()}")
 
+    constants = quad.calculate_constants(len(train_df))
+    logging.info(f"Calculated constants: {constants}")
+
     # Step 7: Create Adaptive Quadtree.
-    quadtree = quad.init_quadtree(train_df)
+    quadtree = initquad.init_quadtree(train_df, constants)
 
     # Step 10: Visualise the quadtree
     vis.visualize_quadtree(quadtree)

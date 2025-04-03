@@ -30,6 +30,48 @@ from sklearn.preprocessing import MinMaxScaler
 #     return base_max
 
 
+# Reference dataset size and tuned values
+REFERENCE_SIZE = 1140125
+TUNED_VALUES = {
+    "alpha": 1000,
+    "kappa": 50000,
+    "lambda_val": 10,
+    "min_base": 500,
+    "beta": 2000,
+    "gamma": 2,
+    "delta": 2
+}
+
+
+def calculate_constants(dataset_size):
+    if not isinstance(dataset_size, (int, float)):
+        raise TypeError(f"Expected dataset_size to be a number, got {type(dataset_size)}")
+
+    # Calculate scaling factor
+    scaling_factor = dataset_size / REFERENCE_SIZE
+
+    # Initialize new constants
+    new_constants = {}
+
+    # Linear scaling for alpha, kappa, min_base, beta
+    for param in ["alpha", "kappa", "min_base", "beta"]:
+        new_constants[param] = max(1, round(TUNED_VALUES[param] * scaling_factor))
+
+    # Logarithmic scaling for lambda_val, gamma, delta with bounds
+    log_scale = 1 + math.log(max(1, scaling_factor)) if scaling_factor > 0 else 1
+
+    # lambda_val: Keep between 5 and 20
+    new_constants["lambda_val"] = min(20, max(5, round(TUNED_VALUES["lambda_val"] * log_scale)))
+
+    # gamma: Keep between 1 and 5
+    new_constants["gamma"] = min(5, max(1, round(TUNED_VALUES["gamma"] * log_scale)))
+
+    # delta: Keep between 1 and 5
+    new_constants["delta"] = min(5, max(1, round(TUNED_VALUES["delta"] * log_scale)))
+
+    return new_constants
+
+
 def crime_density(points, self):
     """
     #     Calculate max_points based on crime count variance.
@@ -131,7 +173,7 @@ class InitialQuadtree:
         return df
 
     @staticmethod
-    def init_quadtree(df):
+    def init_quadtree(df, constants):
         points = [Point(
             x=row['Longitude'], y=row['Latitude'], index=row['index'], Date=row['Date'], Time=row['Time'],
             Hour=row['Hour'], Minute=row['Minute'], Second=row['Second'], Scl_Longitude=row['Scl_Longitude'],
@@ -150,9 +192,17 @@ class InitialQuadtree:
                                        max(df['Latitude']))
         # initial_max_levels = adaptive_max_levels(points)  # Compute once
         quadtree = Quadtree(boundary_rectangle,
+                            # points=df[['Longitude', 'Latitude']].values,
                             density_func=lambda p, self: crime_density(p, self),
                             max_levels_func=lambda p, self: adaptive_max_levels(p, self), # self is the Quadtree instance.
-                            n_total=n_total) # Pass fixed initial_max_levels value
+                            n_total=n_total,
+                            alpha = constants["alpha"],
+                            kappa = constants["kappa"],
+                            lambda_val = constants["lambda_val"],
+                            min_base = constants["min_base"],
+                            beta = constants["beta"],
+                            gamma = constants["gamma"],
+                            delta = constants["delta"]) # Pass fixed initial_max_levels value
         inserted_count = 0
         for point in points:
             if quadtree.insert(point):
@@ -290,7 +340,7 @@ quadtree (insert), subdivide a node into quadrants (subdivide), and check if a n
 class Quadtree:
     def __init__(self, boundary, max_points=None, max_levels=None, density_func=None, max_levels_func=None,
                  node_id=0, root_node=None, node_level=0, parent=None, df=None, ex_time=None, n_total=None,
-                 alpha=1000, kappa=50000, lambda_val=10, min_base=500, beta=2000, gamma=2, delta=2):
+                 alpha=None, kappa=None, lambda_val=None, min_base=None, beta=None, gamma=None, delta=None): #points,
 
         self.model = None  # To hold the current model while traversal through quadtree.
         self.boundary = boundary  # Stores the boundary rectangle of the quadtree.
@@ -316,6 +366,12 @@ class Quadtree:
         self.gamma = gamma  # Variance scaling factor
         self.delta = delta  # Point count scaling factor
 
+        # Validate constants
+        required_constants = ['alpha', 'kappa', 'lambda_val', 'min_base', 'beta', 'gamma', 'delta']
+        for const in required_constants:
+            if getattr(self, const) is None:
+                raise ValueError(f"Constant '{const}' must be provided and cannot be None")
+
         # Set adaptive values after points is defined
         self.max_points = max_points if max_points is not None else (
             density_func(self.points, self) if density_func else 1000)
@@ -335,6 +391,10 @@ class Quadtree:
 
     def insert(self, point, node_id=0):  # Added node_id argument for recursive calls
 
+        # If node_id is provided, use it; otherwise, use self.node_id
+        if node_id is None:
+            node_id = self.node_id
+
         # # Check if max_levels is exceeded before inserting
         # if self.node_level >= self.max_levels:
         #     logging.info(
@@ -345,6 +405,7 @@ class Quadtree:
         if not self.boundary.contains_point(point.x, point.y):
             logging.warning(f"Point ({point.x}, {point.y}) outside boundary of Node {self.node_id}")
             return False
+
         self.points.append(point)  # Appending entered data points to the parent nodes. 07/03/2025
 
         # Check Leaf Node: Check if the current node is a leaf node and there is space to insert the point
@@ -355,7 +416,14 @@ class Quadtree:
 
             if len(self.temp_points) >= self.max_points and self.node_level < self.max_levels:
                 self.subdivide()
-            return True
+            else:
+                # Update max depth seen at the root level
+                if hasattr(self.root_node, 'max_depth'):
+                    self.root_node.max_depth = max(self.root_node.max_depth, self.node_level)
+                else:
+                    self.root_node.max_depth = self.node_level
+                return True
+
             # if len(self.temp_points) < self.max_points:
             #     self.temp_points.append(point)
             #     return True
@@ -371,8 +439,10 @@ class Quadtree:
         for child in self.children:
             if child.boundary.contains_point(point.x, point.y):
                 inserted = child.insert(point, child.node_id)  # Pass current node ID to child
-                break
-        # return False  # If no child can accept the point
+                if inserted:
+                    break
+
+        # If the point wasn't inserted into any child, store it in the current node's temp_points
         if not inserted:
             logging.warning(
                 f"Point ({point.x}, {point.y}) not inserted into any child of Node {self.node_id}, storing in current node")
@@ -434,16 +504,21 @@ class Quadtree:
         # Update max_points frequency based on dataset size
         update_frequency = 3 if self.n_total > 1000000 else 1  # Every 3 levels for large datasets, every level for small
         update_max_points = self.node_level % update_frequency == 0
+
         child_max_points = self.density_func(self.points, self) if update_max_points else self.max_points
         child_max_levels = self.max_levels_func(self.points, self) if update_max_points else self.max_levels  # Update max_levels
+
         if update_max_points:
             logging.info(f"Node {self.node_id} at depth {self.node_level} updating max_points to {child_max_points}, max_levels to {child_max_levels}")
 
-        # Create child nodes for each quadrant.
+        # Create child nodes for each quadrant, passing the constants from the parent
+        self.children = []
+
         for boundary in quadrant_boundaries:
             self.root_node.global_count += 1
             child = Quadtree(
-                boundary,
+                boundary=boundary,
+                # points=[],  # Child starts with no points; they'll be re-inserted
                 max_points=child_max_points,  # self.max_points Initial value, will be updated by density_func
                 max_levels=child_max_levels,  # self.max_levels
                 density_func=self.density_func,  # Pass density function to children
@@ -452,7 +527,14 @@ class Quadtree:
                 root_node=self.root_node,
                 parent=self,
                 node_level=self.node_level + 1,
-                n_total = self.n_total  # Pass to children
+                n_total = self.n_total,  # Pass to children
+                alpha = self.alpha,  # Pass parent's alpha
+                kappa = self.kappa,  # Pass parent's kappa
+                lambda_val = self.lambda_val,  # Pass parent's lambda_val
+                min_base = self.min_base,  # Pass parent's min_base
+                beta = self.beta,  # Pass parent's beta
+                gamma = self.gamma,  # Pass parent's gamma
+                delta = self.delta  # Pass parent's delta
             )
             self.children.append(child)
             # Update max depth seen
