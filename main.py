@@ -49,8 +49,8 @@ if __name__ == "__main__":
     df = df.sort_values(by='Date', ascending=True)
 
     # Optional: Get sample data.
-    start_date = '2015-01-01'
-    end_date = '2020-12-31'
+    start_date = '2008-01-01'
+    end_date = '2017-12-31'
     df = prp.get_sample_data(df, start_date, end_date)
 
     if df.empty:
