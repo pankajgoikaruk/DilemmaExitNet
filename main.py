@@ -1,12 +1,13 @@
 import time
 import logging
 import torch
+import os
 
 # Importing Customized Classes.
 from preprocess import Preprocess as prp
 from quadtree import InitialQuadtree as initquad
 from visualise import Visualise as vis
-import quadtree as quad
+import quadtree
 
 # Configure logging to display time, level, and message
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -15,6 +16,21 @@ if torch.cuda.is_available():
     logging.info("CUDA is available. PyTorch can use GPU for computations.")
 else:
     logging.info("CUDA is not available. PyTorch will use CPU for computation.")
+
+# Define directories.
+node_dcr = 'node_dcr'
+
+def setup_directories(dir_list):
+    """
+    Create directories if they do not exist.
+    """
+    for directory in dir_list:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+            logging.info(f"Created directory: {directory}")
+
+# Set up the directories
+setup_directories([node_dcr])
 
 ############################# MAIN SCRIPT ###########################
 
@@ -63,7 +79,6 @@ if __name__ == "__main__":
     # Step 6: Data Split and Added Prediction Column with Zero Value.
     train_df, val_df = prp.train_test_df_split(df, train_size=0.8)
     train_df = initquad.set_pred_zero(train_df)
-    # val_df = initquad.set_pred_zero(val_df)
 
     train_df['Crime_count'] = train_df['Crime_count'].fillna(0)
     val_df['Crime_count'] = val_df['Crime_count'].fillna(0)
@@ -80,11 +95,19 @@ if __name__ == "__main__":
     print(f"train_df Crime_count summary: {train_df['Crime_count'].describe()}")
     print(f"train_df Crime_count NaN count: {train_df['Crime_count'].isna().sum()}")
 
-    constants = quad.calculate_constants(len(train_df))
+    constants = quadtree.calculate_constants(len(train_df))
     logging.info(f"Calculated constants: {constants}")
 
     # Step 7: Create Adaptive Quadtree.
     quadtree = initquad.init_quadtree(train_df, constants)
+
+    # Traverse the quadtree
+    start_time = time.time()
+    quadtree.traverse_quadtree()
+    end_time = time.time()
+
+    print(f"Script completed in {end_time - start_time:.2f} seconds.")
+    print(f"Quadtree details saved to {node_dcr}/quadtree_nodes.csv")
 
     # Step 10: Visualise the quadtree
     vis.visualize_quadtree(quadtree)

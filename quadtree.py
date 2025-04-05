@@ -1,33 +1,28 @@
 import os
+import csv
+import time
 import logging
 import pandas as pd
 import math
 from sklearn.preprocessing import MinMaxScaler
 
-# Adaptive max_points and max_levels
+# Define directories.
+node_dcr = 'node_dcr'
+dcr_dir_csv = 'node_pred_dir_csv'
+output_dir_csv = 'output_csv'
+model_saved = 'model_saved'
 
-# def crime_density(points, self):
-#     """
-#     Calculate max_points based on crime count variance.
-#     - High variance -> lower max_points (finer split in high-activity areas).
-#     - Low variance -> higher max_points (coarser split in uniform areas).
-#     """
-#     if not points:
-#         return 1000  # Default for empty nodes
-#     crime_counts = [p.Crime_count for p in points]
-#     variance = pd.Series(crime_counts).var()
-#     if pd.isna(variance):  # Handle NaN variance (0 or 1 point)
-#         logging.info(f"Node with {len(points)} points has NaN variance, using default max_points=1000")
-#         return 1000  # Default value when variance can’t be computed
-#     logging.info(f"Crime_count variance: {variance}")
-#     n_points_total = self.n_total # Use total dataset size.
-#     max_cap = max(1000, min(50000, int(n_points_total / 10)))  # Scale cap with dataset size
-#     # Base max_points between 500 and 2000, inversely proportional to variance
-#     # base_max = max(500, min(max_cap, int(5000 / (1 + variance / 2) + len(points))))  # Increasing 5000 value will increase the value of max_points. Increase base, reduce variance impact, increase point contribution
-#     base_max = max(500, min(max_cap, int(2000 / (1 + variance / 2) + len(
-#         points) / 2)))  # Reduced from 5000 to 2000, added len(points)/ to make max_points more adaptive to the actual number of points in the node, encouraging subdivision in denser areas.
-#     logging.info(f"Computed max_points: {base_max}, max_cap: {max_cap}")
-#     return base_max
+def setup_directories(dir_list):
+    """
+    Create directories if they do not exist.
+    """
+    for directory in dir_list:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+            logging.info(f"Created directory: {directory}")
+
+# Set up the directories
+setup_directories([node_dcr, dcr_dir_csv, output_dir_csv, model_saved])
 
 
 # Reference dataset size and tuned values
@@ -129,35 +124,6 @@ def adaptive_max_levels(points, self):
     logging.info(f"Computed max_levels: {max_levels}, variance: {variance}, n_points_total: {n_points_total}")
     return max_levels
 
-    # crime_counts = [p.Crime_count for p in points]
-    # variance = pd.Series(crime_counts).var()
-    # if pd.isna(variance):  # Handle NaN variance
-    #     return 5  # Default when variance can’t be computed
-    # n_points_total = self.n_total
-    # max_depth = max(5, min(25, int(math.log2(n_points_total) + 1)))  # Scale depth with log of size
-    # # Base max_levels, proportional to variance
-    # base_max = max(5, min(max_depth, int(5 + variance / 50 + math.log2(n_points_total) / 2)))
-    # logging.info(f"Computed max_levels: {base_max}, variance: {variance}, n_points_total: {n_points_total}")
-    # return base_max
-
-
-
-def setup_directories(dir_list):
-    """
-    Create directories if they do not exist.
-    """
-    for directory in dir_list:
-        if not os.path.exists(directory):
-            os.makedirs(directory)
-            logging.info(f"Created directory: {directory}")
-
-
-# Define directories.
-dcr_dir_csv = 'node_pred_dir_csv'
-output_dir_csv = 'output_csv'
-model_saved = 'model_saved'
-setup_directories([dcr_dir_csv, output_dir_csv, model_saved])
-
 
 class InitialQuadtree:
     def __init__(self) -> None:
@@ -185,12 +151,10 @@ class InitialQuadtree:
             Crime_count=row['Crime_count'], Prediction=row['Prediction']
         ) for _, row in df.iterrows()]
         n_total = len(df)
-        # initial_max_levels = adaptive_max_levels(points)
-        # print(f"Initializing quadtree with adaptive max_points and max_levels.")
-        # print(f"Computed initial max_levels based on data variance: {initial_max_levels}")
+
         boundary_rectangle = Rectangle(min(df['Longitude']), min(df['Latitude']), max(df['Longitude']),
                                        max(df['Latitude']))
-        # initial_max_levels = adaptive_max_levels(points)  # Compute once
+
         quadtree = Quadtree(boundary_rectangle,
                             # points=df[['Longitude', 'Latitude']].values,
                             density_func=lambda p, self: crime_density(p, self),
@@ -210,66 +174,12 @@ class InitialQuadtree:
         logging.info(f"Total points inserted: {inserted_count} out of {n_total}")
         if hasattr(quadtree, 'max_depth'):
             logging.info(f"Maximum depth reached: {quadtree.max_depth}")
-        return quadtree
 
-    # @staticmethod
-    # def init_quadtree(df):
-    #     # Convert DataFrame to list of Points for initial max_levels calculation
-    #     points = [Point(**row) for _, row in df.iterrows()]
-    #     initial_max_levels = adaptive_max_levels(points)
-    #
-    #     print(f"Initializing quadtree with adaptive max_points and max_levels.")
-    #     print(f"Computed initial max_levels based on data variance: {initial_max_levels}")
-    #
-    #     # Creates a boundary rectangle based on the min/max of Longitude and Latitude.
-    #     boundary_rectangle = Rectangle(
-    #         min(df['Longitude']), min(df['Latitude']),
-    #         max(df['Longitude']), max(df['Latitude'])
-    #     )
-    #
-    #     # Initialize quadtree with adaptive functions
-    #     quadtree = Quadtree(boundary_rectangle, density_func=crime_density, max_levels_func=adaptive_max_levels)
-    #
-    #     # Iterates over the dataset and extracts relevant data points such as longitude, latitude, index, and other
-    #     # features. Extract data points from Longitude and Latitude columns and insert them into the quadtree
-    #     for label, row in df.iterrows():
-    #         x = row['Longitude']
-    #         y = row['Latitude']
-    #         index = row['index']
-    #         Date = row['Date']
-    #         Time = row['Time']
-    #         Hour = row['Hour']
-    #         Minute = row['Minute']
-    #         Second = row['Second']
-    #         Scl_Longitude = row['Scl_Longitude']
-    #         Scl_Latitude = row['Scl_Latitude']
-    #         Day_of_Week = row['Day_of_Week']
-    #         Is_Weekend = row['Is_Weekend']
-    #         Day_of_Month = row['Day_of_Month']
-    #         Day_of_Year = row['Day_of_Year']
-    #         Month = row['Month']
-    #         Quarter = row['Quarter']
-    #         Year = row['Year']
-    #         Week_of_Year = row['Week_of_Year']
-    #         Days_Since_Start = row['Days_Since_Start']
-    #         Is_Holiday = row['Is_Holiday']
-    #         Season_Fall = row['Season_Fall']
-    #         Season_Spring = row['Season_Spring']
-    #         Season_Summer = row['Season_Summer']
-    #         Season_Winter = row['Season_Winter']
-    #         Crime_count = row['Crime_count']
-    #         Prediction = row['Prediction']
-    #
-    #         # Creates a Point object for each data point with the extracted features and inserts it into the quadtree.
-    #         point = Point(x, y, index, Date, Time, Hour, Minute, Second, Scl_Longitude, Scl_Latitude,
-    #                       Day_of_Week, Is_Weekend, Day_of_Month, Day_of_Year, Month, Quarter, Year, Week_of_Year,
-    #                       Days_Since_Start, Is_Holiday, Season_Fall, Season_Spring, Season_Summer, Season_Winter,
-    #                       Crime_count, Prediction)
-    #
-    #         quadtree.insert(point)
-    #
-    #         # Returns the initialized quadtree.
-    #     return quadtree
+        # Log the details of all nodes in the Quadtree
+        logging.info("Logging details of all nodes in the Quadtree:")
+        quadtree.traverse_quadtree()
+
+        return quadtree
 
 
 # Represents a point with various attributes such as coordinates (x and y) and additional information related to
@@ -395,12 +305,6 @@ class Quadtree:
         if node_id is None:
             node_id = self.node_id
 
-        # # Check if max_levels is exceeded before inserting
-        # if self.node_level >= self.max_levels:
-        #     logging.info(
-        #         f"Node {self.node_id} at depth {self.node_level} reached max_levels {self.max_levels}, rejecting point")
-        #     return False  # Stop insertion at this level
-
         # Check Boundary: Check if the point is within the boundary of the current node
         if not self.boundary.contains_point(point.x, point.y):
             logging.warning(f"Point ({point.x}, {point.y}) outside boundary of Node {self.node_id}")
@@ -424,16 +328,6 @@ class Quadtree:
                     self.root_node.max_depth = self.node_level
                 return True
 
-            # if len(self.temp_points) < self.max_points:
-            #     self.temp_points.append(point)
-            #     return True
-            # if self.node_level < self.max_levels:  # Explicit max_levels check
-            #     self.subdivide() # Subdivide if capacity exceeded
-
-        # # Subdivide Node: If the current node is a leaf node, or it's full, subdivide it
-        # if not self.children and self.node_level < self.max_levels:
-        #     self.subdivide()
-
         # Insert into Child Nodes: Attempt to insert the point into the child nodes
         inserted = False
         for child in self.children:
@@ -454,44 +348,6 @@ class Quadtree:
         # Calculate the dimensions of each child node
         x_mid = (self.boundary.x1 + self.boundary.x2) / 2
         y_mid = (self.boundary.y1 + self.boundary.y2) / 2
-
-        # # Create child nodes representing each quadrant
-        # node_id_counter = self.root_node.global_count + 1  # Increasing global count for each node.
-        # self.root_node.global_count = node_id_counter  # Assigned in local variable.
-        # nw_boundary = Rectangle(self.boundary.x1, y_mid, x_mid, self.boundary.y2)
-        # nw_quadtree = Quadtree(nw_boundary, self.max_points, self.max_levels, root_node=self.root_node,
-        #                        parent=self)  # tree_level=self.tree_level,
-        # nw_quadtree.node_id = node_id_counter  # Assigned id to the current node.
-        # # nw_quadtree.node_level = tree_level_count
-        # nw_quadtree.node_level = self.node_level + 1
-        # self.children.append(nw_quadtree)
-        #
-        # node_id_counter = self.root_node.global_count + 1
-        # self.root_node.global_count = node_id_counter
-        # ne_boundary = Rectangle(x_mid, y_mid, self.boundary.x2, self.boundary.y2)
-        # ne_quadtree = Quadtree(ne_boundary, self.max_points, self.max_levels, root_node=self.root_node,
-        #                        parent=self)  # tree_level=self.tree_level,
-        # ne_quadtree.node_id = node_id_counter
-        # ne_quadtree.node_level = self.node_level + 1
-        # self.children.append(ne_quadtree)
-        #
-        # node_id_counter = self.root_node.global_count + 1
-        # self.root_node.global_count = node_id_counter
-        # sw_boundary = Rectangle(self.boundary.x1, self.boundary.y1, x_mid, y_mid)
-        # sw_quadtree = Quadtree(sw_boundary, self.max_points, self.max_levels, root_node=self.root_node,
-        #                        parent=self)  # tree_level=self.tree_level,
-        # sw_quadtree.node_id = node_id_counter
-        # sw_quadtree.node_level = self.node_level + 1
-        # self.children.append(sw_quadtree)
-        #
-        # node_id_counter = self.root_node.global_count + 1
-        # self.root_node.global_count = node_id_counter
-        # se_boundary = Rectangle(x_mid, self.boundary.y1, self.boundary.x2, y_mid)
-        # se_quadtree = Quadtree(se_boundary, self.max_points, self.max_levels, root_node=self.root_node,
-        #                        parent=self)  # tree_level=self.tree_level,
-        # se_quadtree.node_id = node_id_counter
-        # se_quadtree.node_level = self.node_level + 1
-        # self.children.append(se_quadtree)
 
         # Define the boundaries for each quadrant.
         quadrant_boundaries = [
@@ -544,9 +400,6 @@ class Quadtree:
                 self.root_node.max_depth = child.node_level
             logging.info(
                 f"Node {child.node_id} created at current node level {child.node_level}, computed max_levels={child_max_levels}, assigned max_levels={child.max_levels}")
-            # logging.info(f"Node {child.node_id} created at current node level {child.node_level}, computed max_levels={child_max_levels}, assigned max_levels={child.max_levels}")
-
-        # print(f"Splitting at depth {self.node_level}, max_levels: {self.max_levels}")
 
         # Distribute points to children (Insert all points stored in temp_points into the appropriate child).
         for point in self.temp_points:
@@ -564,24 +417,51 @@ class Quadtree:
         self.temp_points = []
         self.max_points = self.density_func(self.points, self) if update_max_points else self.max_points
         self.max_levels = self.max_levels_func(self.points, self) if update_max_points else self.max_levels
-        # self.max_points = self.density_func(self.points)  # More frequently check the node density.
-        # self.max_levels = self.max_levels_func(self.points)
+
 
     # Check if the current node is a leaf node (i.e., it has no children).
     def is_leaf(self):
         return len(self.children) == 0
 
-    # # Recursive method to traversal through quadtree using Depth-First Search Algorithm.
-    # def traverse_quadtree_modelling(self):
-    #     if self.node_id == 0:
-    #         print(f"Visiting node ID: {self.node_id}")
-    #     self.modelling()
-    #     for child in self.children:
-    #         print(f"Visiting node ID: {child.node_id}")
-    #         print()
-    #         child.traverse_quadtree_modelling()
-    #         print(f"Finished visiting node ID: {child.node_id}")
-    #         print()
+
+    # Recursive method to traversal through quadtree using Depth-First Search Algorithm.
+    def traverse_quadtree(self, csv_writer=None, batch_writer=None, batch_timestamp=None):
+        """Recursively log the details of this node and all its children."""
+
+        # Path to store the CSV file
+        output_path = os.path.join(node_dcr, "quadtree_nodes.csv")
+
+        # At the root node, open the file and initialize the batch writer
+        if self.node_level == 0:
+            csvfile = open(output_path, 'w', newline="")
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerow(["Node_ID", "Points", "Level", "Timestamp"])
+            batch_writer = []
+            batch_timestamp = time.strftime("%Y-%m-%d %H:%M:%S") + f",{int(time.time() * 1000) % 1000:03d}"
+        else:
+            assert csv_writer is not None, "csv_writer must be provided for non-root nodes"
+            assert batch_writer is not None, "batch_writer must be provided for non-root nodes"
+            assert batch_timestamp is not None, "batch_timestamp must be provided for non-root nodes"
+
+        # Collect the current node's details
+        row = [self.node_id, len(self.points), self.node_level, batch_timestamp]
+        batch_writer.append(row)
+
+        # Write in batches of 100 rows and update timestamp
+        if len(batch_writer) >= 100:
+            csv_writer.writerows(batch_writer)
+            batch_writer.clear()
+            batch_timestamp = time.strftime("%Y-%m-%d %H:%M:%S") + f",{int(time.time() * 1000) % 1000:03d}"
+
+        # Recursively traverse all children
+        for child in self.children:
+            child.traverse_quadtree(csv_writer, batch_writer, batch_timestamp)
+
+        # At the root node, write any remaining rows and close the file
+        if self.node_level == 0:
+            if batch_writer:  # Write any remaining rows
+                csv_writer.writerows(batch_writer)
+            csvfile.close()
 
     # Convert a datetime format to Unix timestamp.u,bkh
     @staticmethod
@@ -610,3 +490,6 @@ class Quadtree:
 
         # Return the scaled column (avoiding direct modification of df)
         return df[col_name]  # Convert back to 1D
+
+
+
