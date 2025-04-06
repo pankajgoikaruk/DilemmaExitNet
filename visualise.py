@@ -11,6 +11,11 @@ warnings.filterwarnings('ignore')
 
 color_pal = sns.color_palette()
 
+# Define directories.
+node_dcr = 'node_dcr'
+output_dir_img = 'output_img'
+timeseries_dir = 'output_timeseries'
+
 def setup_directories(dir_list):
     """
     Create directories if they do not exist.
@@ -20,11 +25,7 @@ def setup_directories(dir_list):
             os.makedirs(directory)
             logging.info(f"Created directory: {directory}")
 
-# Define directories.
-output_dir_img = 'output_img'
-timeseries_dir = 'output_timeseries'
-
-setup_directories([output_dir_img, timeseries_dir])
+setup_directories([node_dcr, output_dir_img, timeseries_dir])
 
 
 class Visualise:
@@ -146,3 +147,67 @@ class Visualise:
         # timeseries_dir = f"E:\quadtree_single_model_output\output_timeseries"  # Delete this temporary path
         plt.savefig(f"{timeseries_dir}/time_series_for_all_dcrs.pdf", bbox_inches='tight', dpi=500)
         plt.close()
+
+    @staticmethod
+    def point_distribution_by_level(df):
+        # Calculate the total points at each level
+        points_by_level = df.groupby("Level")["Points"].sum()
+        print("\nPoint Distribution by Level:")
+        print(points_by_level)
+        return points_by_level
+
+
+    @staticmethod
+    def node_count_by_level(df):
+        # Count the number of nodes at each level
+        nodes_by_level = df.groupby("Level").size()
+        print("\nNode Count by Level:")
+        print(nodes_by_level)
+
+
+    @staticmethod
+    def leaf_node_analysis(df):
+        # Filter for leaf nodes (nodes with Points > 0)
+        leaf_nodes = df[df["Points"] > 0]
+        print("\nLeaf Node Analysis (Points > 0):")
+        print(leaf_nodes["Points"].describe())
+        return leaf_nodes
+
+
+    @staticmethod
+    def points_vs_level(df, points_by_level, leaf_nodes):
+        # Plot 1: Points vs. Level
+        plt.figure(figsize=(10, 6))
+        plt.plot(points_by_level.index, points_by_level.values, marker='o')
+        plt.title("Total Points by Level")
+        plt.xlabel("Level")
+        plt.ylabel("Total Points")
+        plt.grid(True)
+        plt.savefig(os.path.join(node_dcr, "points_by_level.pdf"))
+        plt.close()
+
+        # Plot 2: Histogram of Points per Node (for leaf nodes)
+        plt.figure(figsize=(10, 6))
+        plt.hist(leaf_nodes["Points"], bins=30, edgecolor='black')
+        plt.title("Histogram of Points per Node (Leaf Nodes)")
+        plt.xlabel("Number of Points")
+        plt.ylabel("Frequency")
+        plt.grid(True)
+        plt.savefig(os.path.join(node_dcr, "points_histogram.pdf"))
+        plt.close()
+
+        print(f"\nVisualizations saved to {node_dcr}/points_by_level.pdf and {node_dcr}/points_histogram.pdf")
+
+
+    @staticmethod
+    def point_distribution_validation(df):
+        # Sum points in leaf nodes
+        leaf_points = df[df["Node_Type"] == "Leaf_Node"]["Points"].sum()
+        root_points = df[df["Level"] == 0]["Points"].iloc[0]
+
+        print(f"Total points in leaf nodes: {leaf_points}")
+        print(f"Total points in root node: {root_points}")
+        if leaf_points == root_points:
+            print("Point distribution is correct!")
+        else:
+            print(f"Point distribution mismatch: Leaf points ({leaf_points}) != Root points ({root_points})")

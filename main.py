@@ -76,6 +76,15 @@ if __name__ == "__main__":
 
     df = prp.create_date_features(df)
 
+    import matplotlib.pyplot as plt
+
+    # Assuming your original dataset has Longitude and Latitude
+    plt.scatter(df["Longitude"], df["Latitude"], s=1, alpha=0.5)
+    plt.title("Spatial Distribution of NYC Crime Data")
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
+    plt.show()
+
     # Step 6: Data Split and Added Prediction Column with Zero Value.
     train_df, val_df = prp.train_test_df_split(df, train_size=0.8)
     train_df = initquad.set_pred_zero(train_df)

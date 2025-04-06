@@ -435,7 +435,7 @@ class Quadtree:
         if self.node_level == 0:
             csvfile = open(output_path, 'w', newline="")
             csv_writer = csv.writer(csvfile)
-            csv_writer.writerow(["Node_ID", "Points", "Level", "Timestamp"])
+            csv_writer.writerow(["Node_ID", "Points", "Level", "Node_Type", "Timestamp"])
             batch_writer = []
             batch_timestamp = time.strftime("%Y-%m-%d %H:%M:%S") + f",{int(time.time() * 1000) % 1000:03d}"
         else:
@@ -443,8 +443,15 @@ class Quadtree:
             assert batch_writer is not None, "batch_writer must be provided for non-root nodes"
             assert batch_timestamp is not None, "batch_timestamp must be provided for non-root nodes"
 
+        # Check is current node is Parent or Leaf node.
+        if self.node_id == 0:
+            node_type = "Root_Node"
+        elif self.children:
+            node_type = "Parent_Node"
+        else:
+            node_type = "Leaf_Node"
         # Collect the current node's details
-        row = [self.node_id, len(self.points), self.node_level, batch_timestamp]
+        row = [self.node_id, len(self.points), self.node_level, node_type, batch_timestamp]
         batch_writer.append(row)
 
         # Write in batches of 100 rows and update timestamp
