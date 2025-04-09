@@ -28,11 +28,11 @@ setup_directories([node_dcr, dcr_dir_csv, output_dir_csv, model_saved])
 # Reference dataset size and tuned values
 REFERENCE_SIZE = 1140125
 TUNED_VALUES = {
-    "alpha": 1000,
-    "kappa": 50000,
+    "alpha": 5000,  # Increased from 1000
+    "kappa": 100000,  # Increased from 50000
     "lambda_val": 10,
-    "min_base": 500,
-    "beta": 2000,
+    "min_base": 2000,  # Increased from 500
+    "beta": 10000,  # Increased from 2000
     "gamma": 2,
     "delta": 2
 }
@@ -117,6 +117,9 @@ def adaptive_max_levels(points, self):
     # Compute max_levels: combine log of dataset size and variance, capped by mu
     computed_levels = int(math.log2(n_points_total) + 1 + variance) if n_points_total > 0 else 5
     max_levels = min(mu, computed_levels)
+
+    # Hard cap at 10
+    max_levels = min(15, max_levels)
 
     # Ensure a minimum depth for small datasets
     max_levels = max(5, max_levels)
@@ -343,13 +346,94 @@ class Quadtree:
             self.temp_points.append(point)  # Store in current node if no child accepts it
         return True
 
+    # def subdivide(self):
+    #
+    #     # Calculate the dimensions of each child node
+    #     x_mid = (self.boundary.x1 + self.boundary.x2) / 2
+    #     y_mid = (self.boundary.y1 + self.boundary.y2) / 2
+    #
+    #     # Define the boundaries for each quadrant.
+    #     quadrant_boundaries = [
+    #         Rectangle(self.boundary.x1, y_mid, x_mid, self.boundary.y2),  # NW
+    #         Rectangle(x_mid, y_mid, self.boundary.x2, self.boundary.y2),  # NE
+    #         Rectangle(self.boundary.x1, self.boundary.y1, x_mid, y_mid),  # SW
+    #         Rectangle(x_mid, self.boundary.y1, self.boundary.x2, y_mid)  # SE
+    #     ]
+    #
+    #     # Update max_points frequency based on dataset size
+    #     update_frequency = 3 if self.n_total > 1000000 else 1  # Every 3 levels for large datasets, every level for small
+    #     update_max_points = self.node_level % update_frequency == 0
+    #
+    #     child_max_points = self.density_func(self.points, self) if update_max_points else self.max_points
+    #     child_max_levels = self.max_levels_func(self.points, self) if update_max_points else self.max_levels  # Update max_levels
+    #
+    #     if update_max_points:
+    #         logging.info(f"Node {self.node_id} at depth {self.node_level} updating max_points to {child_max_points}, max_levels to {child_max_levels}")
+    #
+    #     # Create child nodes for each quadrant, passing the constants from the parent
+    #     self.children = []
+    #
+    #     for boundary in quadrant_boundaries:
+    #         self.root_node.global_count += 1
+    #         child = Quadtree(
+    #             boundary=boundary,
+    #             # points=[],  # Child starts with no points; they'll be re-inserted
+    #             max_points=child_max_points,  # self.max_points Initial value, will be updated by density_func
+    #             max_levels=child_max_levels,  # self.max_levels
+    #             density_func=self.density_func,  # Pass density function to children
+    #             max_levels_func=self.max_levels_func,  # Pass adaptive quadtree level function to children
+    #             node_id=self.root_node.global_count,
+    #             root_node=self.root_node,
+    #             parent=self,
+    #             node_level=self.node_level + 1,
+    #             n_total = self.n_total,  # Pass to children
+    #             alpha = self.alpha,  # Pass parent's alpha
+    #             kappa = self.kappa,  # Pass parent's kappa
+    #             lambda_val = self.lambda_val,  # Pass parent's lambda_val
+    #             min_base = self.min_base,  # Pass parent's min_base
+    #             beta = self.beta,  # Pass parent's beta
+    #             gamma = self.gamma,  # Pass parent's gamma
+    #             delta = self.delta  # Pass parent's delta
+    #         )
+    #         self.children.append(child)
+    #         # Update max depth seen
+    #         if hasattr(self.root_node, 'max_depth'):
+    #             self.root_node.max_depth = max(self.root_node.max_depth, child.node_level)
+    #         else:
+    #             self.root_node.max_depth = child.node_level
+    #         logging.info(
+    #             f"Node {child.node_id} created at current node level {child.node_level}, computed max_levels={child_max_levels}, assigned max_levels={child.max_levels}")
+    #
+    #     # Distribute points to children (Insert all points stored in temp_points into the appropriate child).
+    #     for point in self.temp_points:
+    #         inserted = False
+    #         for child in self.children:
+    #             if child.boundary.contains_point(point.x, point.y):
+    #                 child.insert(point)
+    #                 inserted = True
+    #                 break
+    #         if not inserted:
+    #             logging.warning(
+    #                 f"Point ({point.x}, {point.y}) not inserted into any child node during subdivision of Node {self.node_id}")
+    #
+    #     # Clear temp_points as they have been distributed.
+    #     self.temp_points = []
+    #     self.max_points = self.density_func(self.points, self) if update_max_points else self.max_points
+    #     self.max_levels = self.max_levels_func(self.points, self) if update_max_points else self.max_levels
+
     def subdivide(self):
+        # Calculate median split points based on points
+        if self.points:
+            lats = [point.y for point in self.points]
+            lons = [point.x for point in self.points]
+            x_mid = pd.Series(lons).median()
+            y_mid = pd.Series(lats).median()
+        else:
+            # Fallback to midpoint if no points
+            x_mid = (self.boundary.x1 + self.boundary.x2) / 2
+            y_mid = (self.boundary.y1 + self.boundary.y2) / 2
 
-        # Calculate the dimensions of each child node
-        x_mid = (self.boundary.x1 + self.boundary.x2) / 2
-        y_mid = (self.boundary.y1 + self.boundary.y2) / 2
-
-        # Define the boundaries for each quadrant.
+        # Define the boundaries for each quadrant
         quadrant_boundaries = [
             Rectangle(self.boundary.x1, y_mid, x_mid, self.boundary.y2),  # NW
             Rectangle(x_mid, y_mid, self.boundary.x2, self.boundary.y2),  # NE
@@ -358,42 +442,40 @@ class Quadtree:
         ]
 
         # Update max_points frequency based on dataset size
-        update_frequency = 3 if self.n_total > 1000000 else 1  # Every 3 levels for large datasets, every level for small
+        update_frequency = 3 if self.n_total > 1000000 else 1
         update_max_points = self.node_level % update_frequency == 0
 
         child_max_points = self.density_func(self.points, self) if update_max_points else self.max_points
-        child_max_levels = self.max_levels_func(self.points, self) if update_max_points else self.max_levels  # Update max_levels
+        child_max_levels = self.max_levels_func(self.points, self) if update_max_points else self.max_levels
 
         if update_max_points:
-            logging.info(f"Node {self.node_id} at depth {self.node_level} updating max_points to {child_max_points}, max_levels to {child_max_levels}")
+            logging.info(
+                f"Node {self.node_id} at depth {self.node_level} updating max_points to {child_max_points}, max_levels to {child_max_levels}")
 
-        # Create child nodes for each quadrant, passing the constants from the parent
+        # Create child nodes for each quadrant
         self.children = []
-
         for boundary in quadrant_boundaries:
             self.root_node.global_count += 1
             child = Quadtree(
                 boundary=boundary,
-                # points=[],  # Child starts with no points; they'll be re-inserted
-                max_points=child_max_points,  # self.max_points Initial value, will be updated by density_func
-                max_levels=child_max_levels,  # self.max_levels
-                density_func=self.density_func,  # Pass density function to children
-                max_levels_func=self.max_levels_func,  # Pass adaptive quadtree level function to children
+                max_points=child_max_points,
+                max_levels=child_max_levels,
+                density_func=self.density_func,
+                max_levels_func=self.max_levels_func,
                 node_id=self.root_node.global_count,
                 root_node=self.root_node,
                 parent=self,
                 node_level=self.node_level + 1,
-                n_total = self.n_total,  # Pass to children
-                alpha = self.alpha,  # Pass parent's alpha
-                kappa = self.kappa,  # Pass parent's kappa
-                lambda_val = self.lambda_val,  # Pass parent's lambda_val
-                min_base = self.min_base,  # Pass parent's min_base
-                beta = self.beta,  # Pass parent's beta
-                gamma = self.gamma,  # Pass parent's gamma
-                delta = self.delta  # Pass parent's delta
+                n_total=self.n_total,
+                alpha=self.alpha,
+                kappa=self.kappa,
+                lambda_val=self.lambda_val,
+                min_base=self.min_base,
+                beta=self.beta,
+                gamma=self.gamma,
+                delta=self.delta
             )
             self.children.append(child)
-            # Update max depth seen
             if hasattr(self.root_node, 'max_depth'):
                 self.root_node.max_depth = max(self.root_node.max_depth, child.node_level)
             else:
@@ -401,7 +483,7 @@ class Quadtree:
             logging.info(
                 f"Node {child.node_id} created at current node level {child.node_level}, computed max_levels={child_max_levels}, assigned max_levels={child.max_levels}")
 
-        # Distribute points to children (Insert all points stored in temp_points into the appropriate child).
+        # Distribute points to children
         for point in self.temp_points:
             inserted = False
             for child in self.children:
@@ -413,11 +495,10 @@ class Quadtree:
                 logging.warning(
                     f"Point ({point.x}, {point.y}) not inserted into any child node during subdivision of Node {self.node_id}")
 
-        # Clear temp_points as they have been distributed.
+        # Clear temp_points as they have been distributed
         self.temp_points = []
         self.max_points = self.density_func(self.points, self) if update_max_points else self.max_points
         self.max_levels = self.max_levels_func(self.points, self) if update_max_points else self.max_levels
-
 
     # Check if the current node is a leaf node (i.e., it has no children).
     def is_leaf(self):

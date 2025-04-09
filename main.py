@@ -65,7 +65,7 @@ if __name__ == "__main__":
     df = df.sort_values(by='Date', ascending=True)
 
     # Optional: Get sample data.
-    start_date = '2008-01-01'
+    start_date = '2016-12-01'
     end_date = '2017-12-31'
     df = prp.get_sample_data(df, start_date, end_date)
 
@@ -78,12 +78,12 @@ if __name__ == "__main__":
 
     import matplotlib.pyplot as plt
 
-    # Assuming your original dataset has Longitude and Latitude
-    plt.scatter(df["Longitude"], df["Latitude"], s=1, alpha=0.5)
-    plt.title("Spatial Distribution of NYC Crime Data")
-    plt.xlabel("Longitude")
-    plt.ylabel("Latitude")
-    plt.show()
+    # # Assuming your original dataset has Longitude and Latitude
+    # plt.scatter(df["Longitude"], df["Latitude"], s=1, alpha=0.5)
+    # plt.title("Spatial Distribution of NYC Crime Data")
+    # plt.xlabel("Longitude")
+    # plt.ylabel("Latitude")
+    # plt.show()
 
     # Step 6: Data Split and Added Prediction Column with Zero Value.
     train_df, val_df = prp.train_test_df_split(df, train_size=0.8)
