@@ -110,6 +110,8 @@ if __name__ == "__main__":
     # Step 7: Create Adaptive Quadtree.
     quadtree = initquad.init_quadtree(train_df, constants)
 
+    # quadtree.visualize_quadtree()
+
     # Traverse the quadtree
     start_time = time.time()
     quadtree.traverse_quadtree()
