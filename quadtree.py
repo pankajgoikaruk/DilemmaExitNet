@@ -601,6 +601,7 @@ from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import json
+import numpy as np
 
 # Define directories
 node_dcr = 'node_dcr'
@@ -783,6 +784,9 @@ class Rectangle:
     def intersects(self, other):
         return not (self.x2 < other.x1 or self.x1 > other.x2 or self.y2 < other.y1 or self.y1 > other.y2)
 
+    def area(self):
+        return (self.x2 - self.x1) * (self.y2 - self.y1)
+
 class Quadtree:
     def __init__(self, boundary, max_points=None, max_levels=None, density_func=None, max_levels_func=None,
                  node_id=0, root_node=None, node_level=0, parent=None, df=None, ex_time=None, n_total=None,
@@ -808,6 +812,7 @@ class Quadtree:
         self.gamma = gamma
         self.delta = delta
         self.merged_pairs = {}  # To store merge mappings
+        self.is_merged = False  # To track if the node was merged
 
         required_constants = ['alpha', 'kappa', 'lambda_val', 'min_base', 'beta', 'gamma', 'delta']
         for const in required_constants:
@@ -1091,7 +1096,7 @@ class Quadtree:
     def is_leaf(self):
         return len(self.children) == 0
 
-    # New method: Traverse the quadtree to collect leaf nodes
+    # Traverse the quadtree to collect leaf nodes
     def get_leaf_nodes(self, leaf_nodes=None):
         if leaf_nodes is None:
             leaf_nodes = []
@@ -1106,10 +1111,12 @@ class Quadtree:
     def merge_small_leaf_nodes(self, threshold=1000):
         merged_pairs = {}
         iteration = 0
+        max_combined_threshold = threshold * 2.5  # Allow merging if combined points are below this limit
 
         while True:
             iteration += 1
             leaf_nodes = self.get_leaf_nodes()
+            # Only consider nodes that haven't been merged yet and have points below the threshold
             small_leaves = [
                 node for node in leaf_nodes
                 if 0 < len(node.points) < threshold and  # Exclude nodes with 0 points
@@ -1124,33 +1131,59 @@ class Quadtree:
             print(f"Iteration {iteration}: Found {len(small_leaves)} leaf nodes with fewer than {threshold} points.")
 
             merges_in_iteration = 0
+            # Create a set to track nodes that have been updated in this iteration
+            updated_nodes = set()
+
             for small_node in small_leaves:
+                # Skip if the small node was already updated in this iteration
+                if small_node.node_id in updated_nodes:
+                    continue
+
                 small_node_id = small_node.node_id
                 parent = small_node.parent
 
                 if parent is None:
                     continue
 
+                # Get siblings that are leaf nodes and not yet merged
                 siblings = [
                     child for child in parent.children
                     if child.is_leaf() and child.node_id != small_node_id and
-                    child.node_id not in merged_pairs and child.node_id not in merged_pairs.values()
+                       child.node_id not in merged_pairs and child.node_id not in merged_pairs.values()
                 ]
 
                 if not siblings:
                     continue
 
-                target_sibling = min(siblings, key=lambda x: len(x.points))
+                # Find the sibling with the fewest points, but allow merging if combined points are below max_combined_threshold
+                eligible_siblings = [
+                    sibling for sibling in siblings
+                    if (len(small_node.points) + len(sibling.points)) <= max_combined_threshold
+                ]
+
+                if not eligible_siblings:
+                    continue
+
+                target_sibling = min(eligible_siblings, key=lambda x: len(x.points))
                 target_node_id = target_sibling.node_id
 
+                # Perform the merge
                 original_small_points = len(small_node.points)
                 target_sibling.points.extend(small_node.points)
                 small_node.points = []
                 parent.children.remove(small_node)
 
+                # Set is_merged flags
+                small_node.is_merged = True
+                target_sibling.is_merged = True
+
                 merged_pairs[small_node_id] = target_node_id
                 print(f"Merging Node {small_node_id} ({original_small_points} points) into Node {target_node_id} (now {len(target_sibling.points)} points)")
                 merges_in_iteration += 1
+
+                # Add both nodes to updated_nodes to prevent further merges in this iteration
+                updated_nodes.add(small_node_id)
+                updated_nodes.add(target_node_id)
 
             if merges_in_iteration == 0:
                 print(f"Iteration {iteration}: No merges possible. {len(small_leaves)} small leaf nodes remain unmerged.")
@@ -1161,7 +1194,7 @@ class Quadtree:
             json.dump(merged_pairs, f)
         print(f"Saved merge mapping to node_dcr/merged_pairs.json: {merged_pairs}")
 
-    # New method: Get points for a node, including merged nodes
+    # Get points for a node, including merged nodes
     def get_points_for_node(self, node, all_points=None):
         points = node.points
 
@@ -1181,7 +1214,7 @@ class Quadtree:
 
         return points
 
-    # New method: Get a node by its ID
+    # Get a node by its ID
     def get_node_by_id(self, node_id, node=None):
         if node is None:
             node = self
@@ -1193,7 +1226,7 @@ class Quadtree:
                 return result
         return None
 
-    # New method: Train on quadtree with merged nodes
+    # Train on quadtree with merged nodes
     def train_on_quadtree(self):
         leaf_nodes = self.get_leaf_nodes()
 
@@ -1214,7 +1247,7 @@ class Quadtree:
             # model = train_model(node_points)
             # save_model(model, node_id)
 
-    # New method: Get combined boundaries for a node
+    # Get combined boundaries for a node
     def get_combined_boundaries(self, node):
         min_lon, max_lon, min_lat, max_lat = (self.boundary.x1, self.boundary.x2, self.boundary.y1, self.boundary.y2)
 
@@ -1239,7 +1272,7 @@ class Quadtree:
 
         return min_lon, max_lon, min_lat, max_lat
 
-    # New method: Visualize the quadtree after merging
+    # Visualize the quadtree after merging
     def visualize_quadtree(self):
         leaf_nodes = self.get_leaf_nodes()
 
@@ -1283,7 +1316,7 @@ class Quadtree:
         plt.close()
         print("Saved quadtree visualization to node_dcr/quadtree_visualization_after_merging.pdf")
 
-    # New method: Verify merges
+    # Verify merges
     def verify_merges(self):
         leaf_nodes = self.get_leaf_nodes()
         effective_leaf_nodes = set()
@@ -1307,7 +1340,7 @@ class Quadtree:
             else:
                 print(f"Effective Node {node_id} has {node_points} points.")
 
-    # Modified method: Remove reliance on quadtree_nodes.csv
+    # Remove reliance on quadtree_nodes.csv
     def traverse_quadtree(self, csv_writer=None, batch_writer=None, batch_timestamp=None):
         """Recursively log the details of this node and all its children for debugging purposes."""
         output_path = os.path.join(node_dcr, "quadtree_nodes.csv")
@@ -1315,7 +1348,7 @@ class Quadtree:
         if self.node_level == 0:
             csvfile = open(output_path, 'w', newline="")
             csv_writer = csv.writer(csvfile)
-            csv_writer.writerow(["Node_ID", "Points", "Level", "Node_Type", "Min_Longitude", "Max_Longitude", "Min_Latitude", "Max_Latitude", "Timestamp"])
+            csv_writer.writerow(["Node_ID", "Points", "Level", "Node_Type", "Min_Longitude", "Max_Longitude", "Min_Latitude", "Max_Latitude", "Timestamp", "Parent_ID", "Is_Merged", "Density"])
             batch_writer = []
             batch_timestamp = time.strftime("%Y-%m-%d %H:%M:%S") + f",{int(time.time() * 1000) % 1000:03d}"
         else:
@@ -1330,10 +1363,26 @@ class Quadtree:
         else:
             node_type = "Leaf_Node"
 
+        # Compute density (points per unit area)
+        area = self.boundary.area()
+        density = len(self.points) / area if area > 0 else 0
+
+        # Get parent_id (-1 for root node)
+        parent_id = -1 if self.parent is None else self.parent.node_id
+
         row = [
-            self.node_id, len(self.points), self.node_level, node_type,
-            self.boundary.x1, self.boundary.x2, self.boundary.y1, self.boundary.y2,
-            batch_timestamp
+            self.node_id,
+            len(self.points),
+            self.node_level,
+            node_type,
+            self.boundary.x1,
+            self.boundary.x2,
+            self.boundary.y1,
+            self.boundary.y2,
+            batch_timestamp,
+            parent_id,
+            int(self.is_merged),
+            density
         ]
         batch_writer.append(row)
 
@@ -1349,6 +1398,39 @@ class Quadtree:
             if batch_writer:
                 csv_writer.writerows(batch_writer)
             csvfile.close()
+
+    # Get maximum depth
+    def get_max_depth(self):
+        return self.max_depth
+
+    # Get total number of nodes
+    def get_total_nodes(self):
+        def count_nodes(node):
+            count = 1  # Count the current node
+            for child in node.children:
+                count += count_nodes(child)
+            return count
+
+        return count_nodes(self)
+
+    # Range query to find points within a rectangle
+    def range_query(self, rect):
+        points = []
+        self._range_query(rect, points)
+        return points
+
+    def _range_query(self, rect, points, node=None):
+        if node is None:
+            node = self
+        if not rect.intersects(node.boundary):
+            return
+        if node.is_leaf():
+            for point in node.points:
+                if rect.contains_point(point.x, point.y):
+                    points.append(point)
+        else:
+            for child in node.children:
+                self._range_query(rect, points, child)
 
     @staticmethod
     def datetime_to_unix_timestamps(df):
