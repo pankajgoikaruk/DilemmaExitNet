@@ -115,6 +115,8 @@ if __name__ == "__main__":
     # Traverse the quadtree
     start_time = time.time()
     quadtree.traverse_quadtree()
+    quadtree.evaluate_quadtree()
+
     end_time = time.time()
 
     print(f"Script completed in {end_time - start_time:.2f} seconds.")
@@ -122,6 +124,12 @@ if __name__ == "__main__":
 
     # Step 10: Visualise the quadtree
     vis.visualize_quadtree(quadtree)
+
+    vis.structural_performance_metrics()
+
+    vis.variance_of_points_in_leaf_nodes()
+
+    vis.density_distribution()
 
     # # After quadtree creation
     # quadtree.compute_stats()

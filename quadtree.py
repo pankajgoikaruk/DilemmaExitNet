@@ -624,11 +624,11 @@ setup_directories([node_dcr, dcr_dir_csv, output_dir_csv, model_saved])
 # Reference dataset size and tuned values
 REFERENCE_SIZE = 1140125
 TUNED_VALUES = {
-    "alpha": 5000,
-    "kappa": 100000,
+    "alpha": 2000, # 5000
+    "kappa": 50000, # 100000
     "lambda_val": 10,
-    "min_base": 2000,
-    "beta": 10000,
+    "min_base": 5000, # 2000
+    "beta": 50000, # 10000
     "gamma": 2,
     "delta": 2
 }
@@ -735,7 +735,7 @@ class InitialQuadtree:
             logging.info(f"Maximum depth reached: {quadtree.max_depth}")
 
         # Perform merging of small leaf nodes
-        quadtree.merge_small_leaf_nodes(threshold=1000)
+        quadtree.merge_small_leaf_nodes(threshold=5000) # 1000
 
         return quadtree
 
@@ -1107,40 +1107,77 @@ class Quadtree:
                 child.get_leaf_nodes(leaf_nodes)
         return leaf_nodes
 
-    # Merge small leaf nodes
-    def merge_small_leaf_nodes(self, threshold=1000):
+    def compute_density_percentiles(self):
+        # Save current state to CSV to compute densities
+        self.traverse_quadtree()
+        df = pd.read_csv("node_dcr/quadtree_nodes.csv")
+        densities = df["Density"].values
+        q25 = pd.Series(densities).quantile(0.25)
+        q75 = pd.Series(densities).quantile(0.75)
+        return q25, q75
+
+    # Updated merge_small_leaf_nodes method with density-based merging
+    def merge_small_leaf_nodes(self, threshold=5000, density_outlier_factor=1.5):
         merged_pairs = {}
         iteration = 0
         max_combined_threshold = threshold * 2.5  # Allow merging if combined points are below this limit
 
+        # Compute density percentiles to identify outliers
+        q25, q75 = self.compute_density_percentiles()
+        iqr = q75 - q25
+        density_lower_bound = q25 - density_outlier_factor * iqr
+        density_upper_bound = q75 + density_outlier_factor * iqr
+
         while True:
             iteration += 1
             leaf_nodes = self.get_leaf_nodes()
-            # Only consider nodes that haven't been merged yet and have points below the threshold
-            small_leaves = [
-                node for node in leaf_nodes
-                if 0 < len(node.points) < threshold and  # Exclude nodes with 0 points
-                node.node_id not in merged_pairs and
-                node.node_id not in merged_pairs.values()
-            ]
 
-            if not small_leaves:
-                print(f"Merging complete after {iteration} iterations. No small leaf nodes remain.")
-                break
+            # Identify small nodes (based on point count) and density outliers
+            small_leaves = []
+            density_outlier_nodes = []
 
-            print(f"Iteration {iteration}: Found {len(small_leaves)} leaf nodes with fewer than {threshold} points.")
-
-            merges_in_iteration = 0
-            # Create a set to track nodes that have been updated in this iteration
-            updated_nodes = set()
-
-            for small_node in small_leaves:
-                # Skip if the small node was already updated in this iteration
-                if small_node.node_id in updated_nodes:
+            for node in leaf_nodes:
+                # Skip nodes that have already been merged
+                if node.node_id in merged_pairs or node.node_id in merged_pairs.values():
                     continue
 
-                small_node_id = small_node.node_id
-                parent = small_node.parent
+                # Compute node density
+                node_area = (node.boundary.x2 - node.boundary.x1) * (node.boundary.y2 - node.boundary.y1)
+                node_density = len(node.points) / node_area if node_area > 0 else 0  # Fix: Use len(node.points)
+
+                # Check for small nodes (based on point count)
+                if 0 < len(node.points) < threshold:
+                    small_leaves.append((node, len(node.points)))
+
+                # Check for density outliers
+                if node_density < density_lower_bound or node_density > density_upper_bound:
+                    density_outlier_nodes.append((node, node_density))
+
+            # Sort nodes: small nodes by point count (ascending), density outliers by density (low to high)
+            small_leaves.sort(key=lambda x: x[1])
+            density_outlier_nodes.sort(key=lambda x: x[1])
+
+            # Combine lists, prioritizing small nodes
+            nodes_to_merge = small_leaves + [(node, density) for node, density in density_outlier_nodes if
+                                             node not in [n[0] for n in small_leaves]]
+
+            if not nodes_to_merge:
+                print(f"Merging complete after {iteration} iterations. No small leaf nodes or density outliers remain.")
+                break
+
+            print(
+                f"Iteration {iteration}: Found {len(nodes_to_merge)} nodes to consider for merging (small nodes: {len(small_leaves)}, density outliers: {len(density_outlier_nodes)}).")
+
+            merges_in_iteration = 0
+            updated_nodes = set()  # Track nodes updated in this iteration
+
+            for node_to_merge, _ in nodes_to_merge:
+                # Skip if the node was already updated in this iteration
+                if node_to_merge.node_id in updated_nodes:
+                    continue
+
+                node_to_merge_id = node_to_merge.node_id
+                parent = node_to_merge.parent
 
                 if parent is None:
                     continue
@@ -1148,51 +1185,159 @@ class Quadtree:
                 # Get siblings that are leaf nodes and not yet merged
                 siblings = [
                     child for child in parent.children
-                    if child.is_leaf() and child.node_id != small_node_id and
+                    if child.is_leaf() and child.node_id != node_to_merge_id and
                        child.node_id not in merged_pairs and child.node_id not in merged_pairs.values()
                 ]
 
                 if not siblings:
                     continue
 
-                # Find the sibling with the fewest points, but allow merging if combined points are below max_combined_threshold
+                # Compute density of the node to merge
+                node_to_merge_area = (node_to_merge.boundary.x2 - node_to_merge.boundary.x1) * (
+                            node_to_merge.boundary.y2 - node_to_merge.boundary.y1)
+                node_to_merge_density = len(
+                    node_to_merge.points) / node_to_merge_area if node_to_merge_area > 0 else 0  # Fix: Use len(node_to_merge.points)
+
+                # Find eligible siblings based on combined point count
                 eligible_siblings = [
                     sibling for sibling in siblings
-                    if (len(small_node.points) + len(sibling.points)) <= max_combined_threshold
+                    if (len(node_to_merge.points) + len(sibling.points)) <= max_combined_threshold
                 ]
 
                 if not eligible_siblings:
                     continue
 
-                target_sibling = min(eligible_siblings, key=lambda x: len(x.points))
+                # Choose the sibling with the closest density
+                sibling_densities = [
+                    (sibling, len(sibling.points) / ((sibling.boundary.x2 - sibling.boundary.x1) * (
+                                sibling.boundary.y2 - sibling.boundary.y1)))
+                    for sibling in eligible_siblings
+                    if (sibling.boundary.x2 - sibling.boundary.x1) * (sibling.boundary.y2 - sibling.boundary.y1) > 0
+                    # Avoid division by zero
+                ]
+                sibling_densities.sort(key=lambda x: abs(x[1] - node_to_merge_density))
+                target_sibling = sibling_densities[0][0] if sibling_densities else None
+
+                if not target_sibling:
+                    continue
+
                 target_node_id = target_sibling.node_id
 
                 # Perform the merge
-                original_small_points = len(small_node.points)
-                target_sibling.points.extend(small_node.points)
-                small_node.points = []
-                parent.children.remove(small_node)
+                original_points = len(node_to_merge.points)
+                target_sibling.points.extend(node_to_merge.points)
+                node_to_merge.points = []
+                parent.children.remove(node_to_merge)
 
                 # Set is_merged flags
-                small_node.is_merged = True
+                node_to_merge.is_merged = True
                 target_sibling.is_merged = True
 
-                merged_pairs[small_node_id] = target_node_id
-                print(f"Merging Node {small_node_id} ({original_small_points} points) into Node {target_node_id} (now {len(target_sibling.points)} points)")
+                merged_pairs[node_to_merge_id] = target_node_id
+                print(
+                    f"Merging Node {node_to_merge_id} ({original_points} points) into Node {target_node_id} (now {len(target_sibling.points)} points)")
                 merges_in_iteration += 1
 
                 # Add both nodes to updated_nodes to prevent further merges in this iteration
-                updated_nodes.add(small_node_id)
+                updated_nodes.add(node_to_merge_id)
                 updated_nodes.add(target_node_id)
 
             if merges_in_iteration == 0:
-                print(f"Iteration {iteration}: No merges possible. {len(small_leaves)} small leaf nodes remain unmerged.")
+                print(f"Iteration {iteration}: No merges possible. {len(nodes_to_merge)} nodes remain unmerged.")
                 break
 
         self.merged_pairs = merged_pairs
         with open("node_dcr/merged_pairs.json", "w") as f:
             json.dump(merged_pairs, f)
         print(f"Saved merge mapping to node_dcr/merged_pairs.json: {merged_pairs}")
+
+    # # Merge small leaf nodes
+    # def merge_small_leaf_nodes(self, threshold=5000): # 1000
+    #     merged_pairs = {}
+    #     iteration = 0
+    #     max_combined_threshold = threshold * 2.5  # Allow merging if combined points are below this limit
+    #
+    #     while True:
+    #         iteration += 1
+    #         leaf_nodes = self.get_leaf_nodes()
+    #
+    #         # Only consider nodes that haven't been merged yet and have points below the threshold
+    #         small_leaves = [
+    #             node for node in leaf_nodes
+    #             if 0 < len(node.points) < threshold and  # Exclude nodes with 0 points
+    #             node.node_id not in merged_pairs and
+    #             node.node_id not in merged_pairs.values()
+    #         ]
+    #
+    #         if not small_leaves:
+    #             print(f"Merging complete after {iteration} iterations. No small leaf nodes remain.")
+    #             break
+    #
+    #         print(f"Iteration {iteration}: Found {len(small_leaves)} leaf nodes with fewer than {threshold} points.")
+    #
+    #         merges_in_iteration = 0
+    #         # Create a set to track nodes that have been updated in this iteration
+    #         updated_nodes = set()
+    #
+    #         for small_node in small_leaves:
+    #             # Skip if the small node was already updated in this iteration
+    #             if small_node.node_id in updated_nodes:
+    #                 continue
+    #
+    #             small_node_id = small_node.node_id
+    #             parent = small_node.parent
+    #
+    #             if parent is None:
+    #                 continue
+    #
+    #             # Get siblings that are leaf nodes and not yet merged
+    #             siblings = [
+    #                 child for child in parent.children
+    #                 if child.is_leaf() and child.node_id != small_node_id and
+    #                    child.node_id not in merged_pairs and child.node_id not in merged_pairs.values()
+    #             ]
+    #
+    #             if not siblings:
+    #                 continue
+    #
+    #             # Find the sibling with the fewest points, but allow merging if combined points are below max_combined_threshold
+    #             eligible_siblings = [
+    #                 sibling for sibling in siblings
+    #                 if (len(small_node.points) + len(sibling.points)) <= max_combined_threshold
+    #             ]
+    #
+    #             if not eligible_siblings:
+    #                 continue
+    #
+    #             target_sibling = min(eligible_siblings, key=lambda x: len(x.points))
+    #             target_node_id = target_sibling.node_id
+    #
+    #             # Perform the merge
+    #             original_small_points = len(small_node.points)
+    #             target_sibling.points.extend(small_node.points)
+    #             small_node.points = []
+    #             parent.children.remove(small_node)
+    #
+    #             # Set is_merged flags
+    #             small_node.is_merged = True
+    #             target_sibling.is_merged = True
+    #
+    #             merged_pairs[small_node_id] = target_node_id
+    #             print(f"Merging Node {small_node_id} ({original_small_points} points) into Node {target_node_id} (now {len(target_sibling.points)} points)")
+    #             merges_in_iteration += 1
+    #
+    #             # Add both nodes to updated_nodes to prevent further merges in this iteration
+    #             updated_nodes.add(small_node_id)
+    #             updated_nodes.add(target_node_id)
+    #
+    #         if merges_in_iteration == 0:
+    #             print(f"Iteration {iteration}: No merges possible. {len(small_leaves)} small leaf nodes remain unmerged.")
+    #             break
+    #
+    #     self.merged_pairs = merged_pairs
+    #     with open("node_dcr/merged_pairs.json", "w") as f:
+    #         json.dump(merged_pairs, f)
+    #     print(f"Saved merge mapping to node_dcr/merged_pairs.json: {merged_pairs}")
 
     # Get points for a node, including merged nodes
     def get_points_for_node(self, node, all_points=None):
@@ -1335,7 +1480,7 @@ class Quadtree:
                 if target_id == node_id:
                     small_node = self.get_node_by_id(small_id)
                     node_points += len(small_node.points)
-            if node_points < 1000:
+            if node_points < 5000: # 1000
                 print(f"Warning: Effective Node {node_id} has {node_points} points (below threshold).")
             else:
                 print(f"Effective Node {node_id} has {node_points} points.")
@@ -1431,6 +1576,101 @@ class Quadtree:
         else:
             for child in node.children:
                 self._range_query(rect, points, child)
+
+    # Helper method to estimate memory usage (approximate)
+    def estimate_memory_usage(self):
+        # Approximate memory usage:
+        # - Each node: ~200 bytes (rough estimate for object overhead, boundaries, etc.)
+        # - Each point: ~100 bytes (rough estimate for Point object with attributes)
+        total_nodes = self.get_total_nodes()
+        total_points = sum(len(node.points) for node in self.get_leaf_nodes())
+        node_memory = total_nodes * 200  # bytes
+        point_memory = total_points * 100  # bytes
+        total_memory = (node_memory + point_memory) / (1024 * 1024)  # Convert to MB
+        return total_memory
+
+    # Evaluation method for the quadtree
+    def evaluate_quadtree(self, output_file="node_dcr/quadtree_evaluation.txt"):
+        evaluation_results = []
+
+        # 1. Structural Metrics
+        max_depth = self.get_max_depth()
+        total_nodes = self.get_total_nodes()
+        leaf_nodes = self.get_leaf_nodes()
+        num_leaf_nodes = len(leaf_nodes)
+
+        # Average points per leaf node
+        points_per_leaf = [len(node.points) for node in leaf_nodes]
+        avg_points_per_leaf = np.mean(points_per_leaf) if points_per_leaf else 0
+        variance_points_per_leaf = np.var(points_per_leaf) if points_per_leaf else 0
+
+        # Merged nodes analysis
+        df = pd.read_csv("node_dcr/quadtree_nodes.csv")
+        num_merged_nodes = len(df[df["Is_Merged"] == 1])
+        merged_points = df[df["Is_Merged"] == 1]["Points"].sum()
+
+        # 2. Performance Metrics: Range Query
+        # Define a sample range query rectangle (e.g., a small central region)
+        mid_lon = (self.boundary.x1 + self.boundary.x2) / 2
+        mid_lat = (self.boundary.y1 + self.boundary.y2) / 2
+        range_rect = Rectangle(
+            mid_lon - 0.01, mid_lat - 0.01,
+            mid_lon + 0.01, mid_lat + 0.01
+        )
+
+        start_time = time.time()
+        range_points = self.range_query(range_rect)
+        range_query_time = time.time() - start_time
+        num_points_found = len(range_points)
+
+        # 3. Memory Usage
+        memory_usage_mb = self.estimate_memory_usage()
+
+        # 4. Density Distribution
+        density_stats = df["Density"].describe().to_dict()
+
+        # Compile results
+        evaluation_results.append(f"Evaluation for Median-Based Quadtree")
+        evaluation_results.append(f"=====================================")
+        evaluation_results.append(f"Structural Metrics:")
+        evaluation_results.append(f"- Maximum Depth: {max_depth}")
+        evaluation_results.append(f"- Total Number of Nodes: {total_nodes}")
+        evaluation_results.append(f"- Number of Leaf Nodes: {num_leaf_nodes}")
+        evaluation_results.append(f"- Average Points per Leaf Node: {avg_points_per_leaf:.2f}")
+        evaluation_results.append(f"- Variance of Points per Leaf Node: {variance_points_per_leaf:.2f}")
+        evaluation_results.append(f"- Number of Merged Nodes: {num_merged_nodes}")
+        evaluation_results.append(f"- Total Points in Merged Nodes: {merged_points}")
+        evaluation_results.append(f"\nPerformance Metrics:")
+        evaluation_results.append(
+            f"- Range Query Time (for central 0.02x0.02 degree region): {range_query_time:.4f} seconds")
+        evaluation_results.append(f"- Number of Points Found in Range Query: {num_points_found}")
+        evaluation_results.append(f"- Estimated Memory Usage: {memory_usage_mb:.2f} MB")
+        evaluation_results.append(f"\nDensity Distribution:")
+        for key, value in density_stats.items():
+            evaluation_results.append(f"- {key}: {value:.2f}")
+
+        # Save to file
+        with open(output_file, "w") as f:
+            f.write("\n".join(evaluation_results))
+        print(f"Evaluation results saved to {output_file}")
+
+        return {
+            "max_depth": max_depth,
+            "total_nodes": total_nodes,
+            "num_leaf_nodes": num_leaf_nodes,
+            "avg_points_per_leaf": avg_points_per_leaf,
+            "variance_points_per_leaf": variance_points_per_leaf,
+            "num_merged_nodes": num_merged_nodes,
+            "merged_points": merged_points,
+            "range_query_time": range_query_time,
+            "num_points_found": num_points_found,
+            "memory_usage_mb": memory_usage_mb,
+            "density_stats": density_stats
+        }
+
+# # Add the new methods to the Quadtree class
+# Quadtree.estimate_memory_usage = estimate_memory_usage
+# Quadtree.evaluate_quadtree = evaluate_quadtree
 
     @staticmethod
     def datetime_to_unix_timestamps(df):
