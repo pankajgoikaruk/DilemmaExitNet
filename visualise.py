@@ -464,3 +464,31 @@ class Visualise:
             print("Point distribution is correct!")
         else:
             print(f"Point distribution mismatch: Leaf points ({leaf_points}) != Root points ({root_points})")
+
+    @staticmethod
+    def feature_importance():
+        # Average feature importance (top 5 features)
+        features = ['Crime_count_lag1', 'Day_of_Week', 'Crime_count_roll_mean_7d', 'Date', 'Scl_Longitude']
+        importances = [0.781, 0.167, 0.055, 0.00051, 0.00035]
+
+        # Create bar plot
+        plt.figure(figsize=(8, 5))
+        bars = plt.bar(features, importances, color='skyblue', edgecolor='black')
+
+        # Add labels on top of bars
+        for bar in bars:
+            yval = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width() / 2, yval + 0.01, f'{yval:.3f}', ha='center', va='bottom',
+                     fontsize=10)
+
+        plt.xlabel('Features', fontsize=12)
+        plt.ylabel('Average Feature Importance', fontsize=12)
+        plt.title('Top 5 Feature Importance for Crime Prediction Model', fontsize=14)
+        plt.xticks(rotation=45, ha='right')
+        plt.ylim(0, 1.0)
+        plt.tight_layout()
+
+        # Save the plot
+        plt.savefig(f"{output_dir_img}/feature_importance.png", bbox_inches='tight', dpi=500)
+        plt.savefig(f"{output_dir_img}/feature_importance.pdf", bbox_inches='tight')
+        plt.close()

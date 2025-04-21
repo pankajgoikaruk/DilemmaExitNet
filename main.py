@@ -65,7 +65,7 @@ if __name__ == "__main__":
     df = df.sort_values(by='Date', ascending=True)
 
     # Optional: Get sample data.
-    start_date = '2016-12-01'
+    start_date = '2016-12-01' # 2016-12-01
     end_date = '2017-12-31'
     df = prp.get_sample_data(df, start_date, end_date)
 
@@ -88,6 +88,7 @@ if __name__ == "__main__":
     # Step 6: Data Split and Added Prediction Column with Zero Value.
     train_df, val_df = prp.train_test_df_split(df, train_size=0.8)
     train_df = initquad.set_pred_zero(train_df)
+    val_df = initquad.set_pred_zero(val_df)
 
     train_df['Crime_count'] = train_df['Crime_count'].fillna(0)
     val_df['Crime_count'] = val_df['Crime_count'].fillna(0)
@@ -100,6 +101,8 @@ if __name__ == "__main__":
 
 
 ############################# Create Quadtree #############################
+    # Traverse the quadtree
+    start_time = time.time()
 
     print(f"train_df Crime_count summary: {train_df['Crime_count'].describe()}")
     print(f"train_df Crime_count NaN count: {train_df['Crime_count'].isna().sum()}")
@@ -110,16 +113,15 @@ if __name__ == "__main__":
     # Step 7: Create Adaptive Quadtree.
     quadtree = initquad.init_quadtree(train_df, constants)
 
-    # quadtree.visualize_quadtree()
+    # Perform merging of small leaf nodes
+    quadtree.merge_small_leaf_nodes(threshold=5000)  # 1000
 
-    # Traverse the quadtree
-    start_time = time.time()
+    quadtree.train_on_quadtree()  # Train on full train_df
+
+    quadtree.evaluate_on_validation(val_df)  # Evaluate on val_df
+
     quadtree.traverse_quadtree()
     quadtree.evaluate_quadtree()
-
-    end_time = time.time()
-
-    print(f"Script completed in {end_time - start_time:.2f} seconds.")
     print(f"Quadtree details saved to {node_dcr}/quadtree_nodes.csv")
 
     # Step 10: Visualise the quadtree
@@ -135,8 +137,11 @@ if __name__ == "__main__":
     # quadtree.compute_stats()
     # logging.info("Computed node statistics.")
 
+    end_time = time.time()
+
     # Time Count End.
     elapsed_time = time.time() - start_time
-    logging.info(f"Script completed in {elapsed_time:.2f} seconds.")
+    logging.info(f"Total Script completed in {elapsed_time:.2f} seconds.")
+    # print(f"Script completed in {end_time - start_time:.2f} seconds.")
 
 

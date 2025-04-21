@@ -1,6 +1,6 @@
 import pandas as pd
 import logging
-import torch
+import numpy as np
 import os
 import datetime
 from pandas.tseries.holiday import USFederalHolidayCalendar
@@ -286,12 +286,31 @@ class Preprocess:
         # One-Hot Encoding.
         df = pd.get_dummies(df, columns=["Season"], prefix="Season")
 
+        # Add lag feature
+        df = df.sort_values(by='Date')
+        df['Crime_count_lag1'] = df['Crime_count'].shift(1).fillna(df['Crime_count'].mean())
+        df['Crime_count_lag2'] = df['Crime_count'].shift(2).fillna(df['Crime_count'].mean())
+        df['Crime_count_lag3'] = df['Crime_count'].shift(3).fillna(df['Crime_count'].mean())
+
+        # Add rolling mean (e.g., 7-day window)
+        df['Crime_count_roll_mean_7d'] = df['Crime_count'].rolling(window=7, min_periods=1).mean().fillna(
+            df['Crime_count'].mean())
+
+        # Cyclical encoding for Hour and Month
+        df['Hour_sin'] = np.sin(2 * np.pi * df['Hour'] / 24)
+        df['Hour_cos'] = np.cos(2 * np.pi * df['Hour'] / 24)
+        df['Month_sin'] = np.sin(2 * np.pi * df['Month'] / 12)
+        df['Month_cos'] = np.cos(2 * np.pi * df['Month'] / 12)
+
+
+
         # Rearrange columns
         df = df[['index', 'Date', 'Time', 'Longitude', 'Latitude', 'Hour', 'Minute',
                  'Second', 'Scl_Longitude', 'Scl_Latitude', 'Day_of_Week', 'Is_Weekend',
                  'Day_of_Month', 'Day_of_Year', 'Month', 'Quarter', 'Year', 'Week_of_Year',
                  'Days_Since_Start', 'Is_Holiday', 'Season_Fall', 'Season_Spring',
-                 'Season_Summer', 'Season_Winter', 'Crime_count']]
+                 'Season_Summer', 'Season_Winter', 'Crime_count_lag1', 'Crime_count_lag2', 'Crime_count_lag3',
+                 'Crime_count_roll_mean_7d', 'Hour_sin', 'Hour_cos', 'Month_sin', 'Month_cos', 'Crime_count']]
 
         return df
 

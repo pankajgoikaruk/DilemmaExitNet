@@ -20,3 +20,5 @@ leaf_nodes = vis.leaf_node_analysis(df)
 vis.points_vs_level(df, points_by_level, leaf_nodes)
 
 vis.point_distribution_validation(df)
+
+vis.feature_importance()
