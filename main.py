@@ -5,9 +5,12 @@ import os
 
 # Importing Customized Classes.
 from preprocess import Preprocess as prp
-from quadtree import InitialQuadtree as initquad
+from quadtree import InitialQuadtree
 from visualise import Visualise as vis
 import quadtree
+
+# Create an instance
+initquad_instance = InitialQuadtree()
 
 # Configure logging to display time, level, and message
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -85,10 +88,12 @@ if __name__ == "__main__":
     # plt.ylabel("Latitude")
     # plt.show()
 
+    print(f"Raw train_df Crime_count stats: {df['Crime_count'].describe().to_dict()}")
+
     # Step 6: Data Split and Added Prediction Column with Zero Value.
     train_df, val_df = prp.train_test_df_split(df, train_size=0.8)
-    train_df = initquad.set_pred_zero(train_df)
-    val_df = initquad.set_pred_zero(val_df)
+    train_df = initquad_instance.set_pred_zero(train_df)
+    val_df = initquad_instance.set_pred_zero(val_df)
 
     train_df['Crime_count'] = train_df['Crime_count'].fillna(0)
     val_df['Crime_count'] = val_df['Crime_count'].fillna(0)
@@ -111,7 +116,7 @@ if __name__ == "__main__":
     logging.info(f"Calculated constants: {constants}")
 
     # Step 7: Create Adaptive Quadtree.
-    quadtree = initquad.init_quadtree(train_df, constants)
+    quadtree = initquad_instance.init_quadtree(train_df, constants, initquad_instance)
 
     # Perform merging of small leaf nodes
     quadtree.merge_small_leaf_nodes(threshold=5000)  # 1000

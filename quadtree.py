@@ -11,7 +11,9 @@ import json
 import numpy as np
 import xgboost as xgb
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import joblib
+from collections import defaultdict
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import StandardScaler
 
 # Define directories
 node_dcr = 'node_dcr'
@@ -97,17 +99,42 @@ def adaptive_max_levels(points, self):
 class InitialQuadtree:
     def __init__(self):
         self.evaluation_results = []
+        self.scaler = None  # To store the MinMaxScaler for later use
+        self.scaler_fitted = False  # Flag to track if scaler is fitted
 
-    @staticmethod
-    def set_pred_zero(df):
+    def set_pred_zero(self, df):
         df = df.copy()
         df.loc[:, 'Date'] = Quadtree.datetime_to_unix_timestamps(df)
-        df.loc[:, 'Crime_count'] = Quadtree.min_max_scale_values(df, col_name='Crime_count').round()
+
+        # Log Crime_count stats before transformation
+        logging.info(f"Crime_count stats before transformation: {df['Crime_count'].describe().to_dict()}")
+
+        # Apply log1p to Crime_count
+        df['Crime_count'] = np.log1p(df['Crime_count'])
+
+        # Log Crime_count stats after log1p
+        logging.info(f"Crime_count stats after log1p: {df['Crime_count'].describe().to_dict()}")
+
+        # If scaler is not fitted, fit it; otherwise, transform using the existing scaler
+        if not self.scaler_fitted:
+            col_counts = df['Crime_count'].values.reshape(-1, 1)
+            self.scaler = MinMaxScaler(feature_range=(0, 1))
+            df.loc[:, 'Crime_count'] = self.scaler.fit_transform(col_counts).flatten()
+            self.scaler_fitted = True
+            logging.info("Scaler fitted on training data.")
+        else:
+            col_counts = df['Crime_count'].values.reshape(-1, 1)
+            df.loc[:, 'Crime_count'] = self.scaler.transform(col_counts).flatten()
+            logging.info("Scaler transformed validation data.")
+
+        # Log Crime_count stats after scaling
+        logging.info(f"Crime_count stats after scaling: {df['Crime_count'].describe().to_dict()}")
+
         df.loc[:, 'Prediction'] = 0
         return df
 
     @staticmethod
-    def init_quadtree(df, constants):
+    def init_quadtree(df, constants, init_quadtree_instance):
         points = [Point(
             x=row['Longitude'], y=row['Latitude'], index=row['index'], Date=row['Date'], Time=row['Time'],
             Hour=row['Hour'], Minute=row['Minute'], Second=row['Second'], Scl_Longitude=row['Scl_Longitude'],
@@ -138,7 +165,8 @@ class InitialQuadtree:
             min_base=constants["min_base"],
             beta=constants["beta"],
             gamma=constants["gamma"],
-            delta=constants["delta"]
+            delta=constants["delta"],
+            init_quadtree_instance=init_quadtree_instance  # Pass the instance
         )
         inserted_count = 0
         for point in points:
@@ -194,10 +222,10 @@ class Point:
 
 class Rectangle:
     def __init__(self, x1, y1, x2, y2):
-        self.x1 = x1
-        self.y1 = y1
-        self.x2 = x2
-        self.y2 = y2
+        self.x1 = x1 # left
+        self.y1 = y1 # bottom
+        self.x2 = x2 # right
+        self.y2 = y2 # top
 
     def contains_point(self, x, y):
         return (self.x1 <= x <= self.x2) and (self.y1 <= y <= self.y2)
@@ -211,7 +239,8 @@ class Rectangle:
 class Quadtree:
     def __init__(self, boundary, max_points=None, max_levels=None, density_func=None, max_levels_func=None,
                  node_id=0, root_node=None, node_level=0, parent=None, df=None, ex_time=None, n_total=None,
-                 alpha=None, kappa=None, lambda_val=None, min_base=None, beta=None, gamma=None, delta=None):
+                 alpha=None, kappa=None, lambda_val=None, min_base=None, beta=None, gamma=None, delta=None,
+                 init_quadtree_instance=None):
         self.model = None # To hold trained model
         self.boundary = boundary
         self.density_func = density_func if density_func is not None else crime_density
@@ -234,6 +263,8 @@ class Quadtree:
         self.delta = delta
         self.merged_pairs = {}  # To store merge mappings
         self.is_merged = False  # To track if the node was merged
+        self.init_quadtree_instance = init_quadtree_instance  # Store the InitialQuadtree instance
+        self.root = self # Set self.root to the current Quadtree instance (itself)
 
         required_constants = ['alpha', 'kappa', 'lambda_val', 'min_base', 'beta', 'gamma', 'delta']
         for const in required_constants:
@@ -334,7 +365,8 @@ class Quadtree:
                 min_base=self.min_base,
                 beta=self.beta,
                 gamma=self.gamma,
-                delta=self.delta
+                delta=self.delta,
+                init_quadtree_instance = self.init_quadtree_instance  # Pass to children
             )
             self.children.append(child)
             if hasattr(self.root_node, 'max_depth'):
@@ -536,93 +568,6 @@ class Quadtree:
             json.dump(merged_pairs, f)
         print(f"Saved merge mapping to node_dcr/merged_pairs.json: {merged_pairs}")
 
-    # # Merge small leaf nodes
-    # def merge_small_leaf_nodes(self, threshold=5000): # 1000
-    #     merged_pairs = {}
-    #     iteration = 0
-    #     max_combined_threshold = threshold * 2.5  # Allow merging if combined points are below this limit
-    #
-    #     while True:
-    #         iteration += 1
-    #         leaf_nodes = self.get_leaf_nodes()
-    #
-    #         # Only consider nodes that haven't been merged yet and have points below the threshold
-    #         small_leaves = [
-    #             node for node in leaf_nodes
-    #             if 0 < len(node.points) < threshold and  # Exclude nodes with 0 points
-    #             node.node_id not in merged_pairs and
-    #             node.node_id not in merged_pairs.values()
-    #         ]
-    #
-    #         if not small_leaves:
-    #             print(f"Merging complete after {iteration} iterations. No small leaf nodes remain.")
-    #             break
-    #
-    #         print(f"Iteration {iteration}: Found {len(small_leaves)} leaf nodes with fewer than {threshold} points.")
-    #
-    #         merges_in_iteration = 0
-    #         # Create a set to track nodes that have been updated in this iteration
-    #         updated_nodes = set()
-    #
-    #         for small_node in small_leaves:
-    #             # Skip if the small node was already updated in this iteration
-    #             if small_node.node_id in updated_nodes:
-    #                 continue
-    #
-    #             small_node_id = small_node.node_id
-    #             parent = small_node.parent
-    #
-    #             if parent is None:
-    #                 continue
-    #
-    #             # Get siblings that are leaf nodes and not yet merged
-    #             siblings = [
-    #                 child for child in parent.children
-    #                 if child.is_leaf() and child.node_id != small_node_id and
-    #                    child.node_id not in merged_pairs and child.node_id not in merged_pairs.values()
-    #             ]
-    #
-    #             if not siblings:
-    #                 continue
-    #
-    #             # Find the sibling with the fewest points, but allow merging if combined points are below max_combined_threshold
-    #             eligible_siblings = [
-    #                 sibling for sibling in siblings
-    #                 if (len(small_node.points) + len(sibling.points)) <= max_combined_threshold
-    #             ]
-    #
-    #             if not eligible_siblings:
-    #                 continue
-    #
-    #             target_sibling = min(eligible_siblings, key=lambda x: len(x.points))
-    #             target_node_id = target_sibling.node_id
-    #
-    #             # Perform the merge
-    #             original_small_points = len(small_node.points)
-    #             target_sibling.points.extend(small_node.points)
-    #             small_node.points = []
-    #             parent.children.remove(small_node)
-    #
-    #             # Set is_merged flags
-    #             small_node.is_merged = True
-    #             target_sibling.is_merged = True
-    #
-    #             merged_pairs[small_node_id] = target_node_id
-    #             print(f"Merging Node {small_node_id} ({original_small_points} points) into Node {target_node_id} (now {len(target_sibling.points)} points)")
-    #             merges_in_iteration += 1
-    #
-    #             # Add both nodes to updated_nodes to prevent further merges in this iteration
-    #             updated_nodes.add(small_node_id)
-    #             updated_nodes.add(target_node_id)
-    #
-    #         if merges_in_iteration == 0:
-    #             print(f"Iteration {iteration}: No merges possible. {len(small_leaves)} small leaf nodes remain unmerged.")
-    #             break
-    #
-    #     self.merged_pairs = merged_pairs
-    #     with open("node_dcr/merged_pairs.json", "w") as f:
-    #         json.dump(merged_pairs, f)
-    #     print(f"Saved merge mapping to node_dcr/merged_pairs.json: {merged_pairs}")
 
     # Get points for a node, including merged nodes
     def get_points_for_node(self, node, all_points=None):
@@ -656,23 +601,165 @@ class Quadtree:
                 return result
         return None
 
+    # # Here we are replacing Prediction column with new prediction and refining model from root node.
+    # def train_on_quadtree(self):
+    #     # Get all nodes in a top-down order (BFS)
+    #     nodes = self.get_all_nodes_top_down()
+    #     feature_columns = [
+    #         'Scl_Longitude', 'Scl_Latitude', 'Date', 'Hour', 'Day_of_Week', 'Is_Weekend',
+    #         'Day_of_Month', 'Day_of_Year', 'Month', 'Quarter', 'Year', 'Week_of_Year',
+    #         'Days_Since_Start', 'Is_Holiday', 'Season_Fall', 'Season_Spring', 'Season_Summer', 'Season_Winter',
+    #         'Crime_count_lag1', 'Crime_count_lag2', 'Crime_count_lag3', 'Crime_count_roll_mean_7d',
+    #         'Hour_sin', 'Hour_cos', 'Month_sin', 'Month_cos',
+    #         'Prediction'  # Used for both parent predictions and current node predictions
+    #     ]
+    #     target_column = 'Crime_count'
+    #
+    #     for node in nodes:
+    #         node_id = node.node_id
+    #         if node_id in self.merged_pairs:
+    #             print(f"Skipping merged node {node_id}")
+    #             continue
+    #
+    #         node_points = self.get_points_for_node(node)
+    #         num_points = len(node_points)
+    #         print(f"Training Node {node_id} ({num_points} points)")
+    #
+    #         if num_points < 1000:
+    #             print(f"Warning: Node {node_id} has {num_points} points, skipping training.")
+    #             continue
+    #
+    #         # Convert points to DataFrame
+    #         data = {col: [getattr(pt, col) for pt in node_points] for col in feature_columns + [target_column, 'index']}
+    #         df = pd.DataFrame(data)
+    #         df = df.sort_values(by='Date')
+    #
+    #         # Step 1: Check parent and map parent predictions
+    #         parent_node = self.get_parent_node(node)
+    #         if parent_node and parent_node.model:
+    #             print(f"Node {node_id} has parent Node {parent_node.node_id} with a trained model.")
+    #             # Map parent's predictions to the current node's points using indices
+    #             parent_points = self.get_points_for_node(parent_node)
+    #             parent_df = pd.DataFrame({
+    #                 'index': [pt.index for pt in parent_points],
+    #                 'Parent_Prediction': [pt.Prediction for pt in parent_points]
+    #             })
+    #             print(
+    #                 f"Parent Node {parent_node.node_id} has {len(parent_points)} points with predictions: {parent_df['Parent_Prediction'].describe().to_dict()}")
+    #             # Merge parent's predictions into the current node's DataFrame
+    #             df = df.merge(parent_df[['index', 'Parent_Prediction']], on='index', how='left')
+    #             df['Prediction'] = df['Parent_Prediction'].fillna(0)
+    #             df = df.drop(columns=['Parent_Prediction'])
+    #             print(f"Node {node_id} Prediction column after parent mapping: {df['Prediction'].describe().to_dict()}")
+    #         else:
+    #             # No parent (e.g., root node), initialize Prediction as 0
+    #             print(f"Node {node_id} has no parent (likely root). Initializing Prediction to 0.")
+    #             df['Prediction'] = 0
+    #             print(f"Node {node_id} Prediction column after initialization: {df['Prediction'].describe().to_dict()}")
+    #
+    #         X = df[feature_columns]
+    #         y = df[target_column]
+    #
+    #         # Step 2: Train or fine-tune the model
+    #         start_time = time.time()
+    #         if parent_node and parent_node.model:
+    #             print(f"Fine-tuning parent model for Node {node_id}...")
+    #             # Extract the parent's booster
+    #             parent_booster = parent_node.model.get_booster()
+    #             # Create a new XGBRegressor instance with the same parameters
+    #             model = xgb.XGBRegressor(
+    #                 n_estimators=parent_node.model.n_estimators,
+    #                 max_depth=parent_node.model.max_depth,
+    #                 learning_rate=parent_node.model.learning_rate,
+    #                 random_state=parent_node.model.random_state,
+    #                 n_jobs=parent_node.model.n_jobs
+    #             )
+    #             # Fine-tune using the parent's booster
+    #             model.fit(X, y, xgb_model=parent_booster)
+    #             print(f"Model fine-tuned for Node {node_id} using parent Node {parent_node.node_id}'s model.")
+    #         else:
+    #             print(f"Training new model for Node {node_id} (no parent model available)...")
+    #             model = xgb.XGBRegressor(
+    #                 objective='reg:squarederror',
+    #                 max_depth=8,
+    #                 min_child_weight=3,
+    #                 subsample=0.8,
+    #                 colsample_bytree=0.8,
+    #                 learning_rate=0.1,
+    #                 n_estimators=200,
+    #                 random_state=42
+    #
+    #                 # base_score = 0.5, booster = 'gbtree', n_estimators = 1000,
+    #                 # early_stopping_rounds = 50, objective = 'reg:squarederror',
+    #                 # max_depth = 3, learning_rate = 0.01, random_state = 100, n_jobs = 4
+    #             )
+    #             model.fit(X, y)
+    #             print(f"New model trained for Node {node_id}.")
+    #
+    #         # Step 3: Generate and update predictions
+    #         new_predictions = model.predict(X)
+    #         print(f"Generated new predictions for Node {node_id}: {pd.Series(new_predictions).describe().to_dict()}")
+    #         df['Prediction'] = new_predictions
+    #
+    #         # Update the node's points with the new predictions
+    #         for i, point in enumerate(node_points):
+    #             point.Prediction = new_predictions[i]
+    #         print(
+    #             f"Updated Prediction attribute in Node {node_id}'s points: {pd.Series([pt.Prediction for pt in node_points]).describe().to_dict()}")
+    #
+    #         end_time = time.time()
+    #         node.ex_time = end_time - start_time
+    #         print(f"Training time for Node {node_id}: {node.ex_time:.2f} seconds")
+    #
+    #         # Step 4: Compute and log feature importance
+    #         importance = model.feature_importances_
+    #         feature_importance = dict(zip(feature_columns, importance))
+    #         print(f"Feature Importance for Node {node_id}: {feature_importance}")
+    #
+    #         # Step 5: Assign the model to the node
+    #         node.model = model
+    #
+    #         # Step 6: Save the model using XGBoost's native method
+    #         os.makedirs('model_saved', exist_ok=True)
+    #         model_path = os.path.join('model_saved', f"node_{node_id}.model")
+    #         model.save_model(model_path)
+    #         print(f"Saved model: {model_path}")
+    #
+    #         # Step 7: Save predictions
+    #         pred_df = df[['index', 'Scl_Longitude', 'Scl_Latitude', target_column, 'Prediction']]
+    #         pred_path = os.path.join('node_pred_dir_csv', f"node_{node_id}_pred.csv")
+    #         pred_df.to_csv(pred_path, index=False)
+    #         print(f"Saved predictions: {pred_path}")
+    #
+    #         node.evaluation_results.append({
+    #             'Node_ID': node_id,
+    #             'Node_Level': node.node_level,
+    #             'Points': num_points,
+    #             'Ex_Time': node.ex_time,
+    #             'Feature_Importance': feature_importance
+    #         })
+
+
+    # In this method we are saving new prediction in new column and created separate base-model for root node.
     def train_on_quadtree(self):
-        leaf_nodes = self.get_leaf_nodes()
+        # Get all nodes in a top-down order (BFS)
+        nodes = self.get_all_nodes_top_down()
         feature_columns = [
             'Scl_Longitude', 'Scl_Latitude', 'Date', 'Hour', 'Day_of_Week', 'Is_Weekend',
             'Day_of_Month', 'Day_of_Year', 'Month', 'Quarter', 'Year', 'Week_of_Year',
             'Days_Since_Start', 'Is_Holiday', 'Season_Fall', 'Season_Spring', 'Season_Summer', 'Season_Winter',
             'Crime_count_lag1', 'Crime_count_lag2', 'Crime_count_lag3', 'Crime_count_roll_mean_7d',
-            'Hour_sin', 'Hour_cos', 'Month_sin', 'Month_cos'
+            'Hour_sin', 'Hour_cos', 'Month_sin', 'Month_cos',
+            'Prediction'
         ]
         target_column = 'Crime_count'
 
-        for node in leaf_nodes:
+        for node in nodes:
             node_id = node.node_id
             if node_id in self.merged_pairs:
+                print(f"Skipping merged node {node_id}")
                 continue
 
-            # Get points with merged nodes
             node_points = self.get_points_for_node(node)
             num_points = len(node_points)
             print(f"Training Node {node_id} ({num_points} points)")
@@ -682,51 +769,133 @@ class Quadtree:
                 continue
 
             # Convert points to DataFrame
-            data = {
-                col: [getattr(pt, col) for pt in node_points]
-                for col in feature_columns + [target_column, 'index']
-            }
+            data = {col: [getattr(pt, col) for pt in node_points] for col in feature_columns + [target_column, 'index']}
             df = pd.DataFrame(data)
-
-            # Sort by Date for consistency
             df = df.sort_values(by='Date')
 
-            # Prepare features and target (use full data for training)
+            # Step 1: Check parent and map parent predictions
+            parent_node = self.get_parent_node(node)
+            if parent_node and parent_node.model:
+                print(f"Node {node_id} has parent Node {parent_node.node_id} with a trained model.")
+                parent_points = self.get_points_for_node(parent_node)
+                parent_df = pd.DataFrame({
+                    'index': [pt.index for pt in parent_points],
+                    'Parent_Prediction': [pt.Prediction for pt in parent_points]
+                })
+                print(
+                    f"Parent Node {parent_node.node_id} has {len(parent_points)} points with predictions: {parent_df['Parent_Prediction'].describe().to_dict()}")
+                df = df.merge(parent_df[['index', 'Parent_Prediction']], on='index', how='left')
+                df['Prediction'] = df['Parent_Prediction'].fillna(0)
+                df = df.drop(columns=['Parent_Prediction'])
+                print(f"Node {node_id} Prediction column after parent mapping: {df['Prediction'].describe().to_dict()}")
+            else:
+                # No parent (e.g., root node), initialize Prediction with a fine-tuned baseline
+                print(f"Node {node_id} has no parent (likely root). Fine-tuning baseline model for Prediction...")
+                from sklearn.model_selection import GridSearchCV
+                baseline_model = xgb.XGBRegressor(random_state=42)
+                param_grid = {
+                    'n_estimators': [50, 100, 200],
+                    'max_depth': [3, 5, 7],
+                    'learning_rate': [0.01, 0.05, 0.1]
+                }
+                grid_search = GridSearchCV(
+                    estimator=baseline_model,
+                    param_grid=param_grid,
+                    cv=3,
+                    scoring='neg_mean_absolute_error',
+                    n_jobs=-1
+                )
+                X_baseline = df[feature_columns].copy()
+                X_baseline['Prediction'] = 0
+                y_baseline = df[target_column]
+                grid_search.fit(X_baseline, y_baseline)
+                best_baseline_model = grid_search.best_estimator_
+                print(f"Best baseline parameters: {grid_search.best_params_}")
+                df['Prediction'] = best_baseline_model.predict(X_baseline)
+                print(
+                    f"Node {node_id} Prediction column after baseline initialization: {df['Prediction'].describe().to_dict()}")
+                # Save the baseline model for use in evaluation
+                os.makedirs('model_saved', exist_ok=True)
+                baseline_model_path = os.path.join('model_saved', 'baseline_model.model')
+                best_baseline_model.save_model(baseline_model_path)
+                print(f"Saved baseline model: {baseline_model_path}")
+
+            # Scale Prediction to match other features
+            from sklearn.preprocessing import StandardScaler
+            scaler = StandardScaler()
+            df['Prediction'] = scaler.fit_transform(df[['Prediction']])
+
             X = df[feature_columns]
             y = df[target_column]
 
-            # Train XGBoost model on full node data
+            # Step 2: Train or fine-tune the model
             start_time = time.time()
-            model = xgb.XGBRegressor(
-                n_estimators=300,
-                max_depth=6,
-                learning_rate=0.05,
-                random_state=42,
-                n_jobs=-1
-            )
-            model.fit(X, y)
+            if parent_node and parent_node.model:
+                print(f"Fine-tuning parent model for Node {node_id}...")
+                parent_booster = parent_node.model.get_booster()
+                model = xgb.XGBRegressor(
+                    n_estimators=parent_node.model.n_estimators,
+                    max_depth=parent_node.model.max_depth,
+                    learning_rate=parent_node.model.learning_rate,
+                    random_state=parent_node.model.random_state,
+                    n_jobs=parent_node.model.n_jobs,
+                    reg_lambda=1.0,
+                    reg_alpha=0.5
+                )
+                model.fit(X, y, xgb_model=parent_booster)
+                print(f"Model fine-tuned for Node {node_id} using parent Node {parent_node.node_id}'s model.")
+            else:
+                print(f"Training new model for Node {node_id} (no parent model available)...")
+                model = xgb.XGBRegressor(
+                    objective='reg:squarederror',
+                    max_depth=8,
+                    min_child_weight=5,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
+                    learning_rate=0.1,
+                    n_estimators=200,
+                    random_state=42,
+                    reg_lambda=1.0,
+                    reg_alpha=0.5
+                )
+                model.fit(X, y)
+                print(f"New model trained for Node {node_id}.")
+
+            # Step 3: Generate new predictions (store separately)
+            new_predictions = model.predict(X)
+            print(f"Generated new predictions for Node {node_id}: {pd.Series(new_predictions).describe().to_dict()}")
+            df['Current_Prediction'] = new_predictions
+
+            # Update the node's points with the new predictions for child nodes
+            for i, point in enumerate(node_points):
+                point.Prediction = new_predictions[i]
+            print(
+                f"Updated Prediction attribute in Node {node_id}'s points: {pd.Series([pt.Prediction for pt in node_points]).describe().to_dict()}")
+
             end_time = time.time()
             node.ex_time = end_time - start_time
+            print(f"Training time for Node {node_id}: {node.ex_time:.2f} seconds")
 
-            # Compute feature importance
+            # Step 4: Compute and log feature importance
             importance = model.feature_importances_
             feature_importance = dict(zip(feature_columns, importance))
             print(f"Feature Importance for Node {node_id}: {feature_importance}")
 
-            # Store model
+            # Step 5: Assign the model to the node
             node.model = model
-            model_path = os.path.join('model_saved', f"node_{node_id}.pkl")
-            joblib.dump(model, model_path)
+
+            # Step 6: Save the model using XGBoost's native method
+            os.makedirs('model_saved', exist_ok=True)
+            model_path = os.path.join('model_saved', f"node_{node_id}.model")
+            model.save_model(model_path)
             print(f"Saved model: {model_path}")
 
-            # Save predictions on training data
-            df['Prediction'] = model.predict(X)
-            pred_df = df[['index', 'Scl_Longitude', 'Scl_Latitude', target_column, 'Prediction']]
+            # Step 7: Save predictions
+            pred_df = df[['index', 'Scl_Longitude', 'Scl_Latitude', target_column, 'Prediction', 'Current_Prediction']]
             pred_path = os.path.join('node_pred_dir_csv', f"node_{node_id}_pred.csv")
             pred_df.to_csv(pred_path, index=False)
             print(f"Saved predictions: {pred_path}")
 
-            # Store training time
             node.evaluation_results.append({
                 'Node_ID': node_id,
                 'Node_Level': node.node_level,
@@ -735,23 +904,398 @@ class Quadtree:
                 'Feature_Importance': feature_importance
             })
 
+    # def train_on_quadtree(self):
+    #     # Get all nodes in a top-down order (BFS)
+    #     nodes = self.get_all_nodes_top_down()
+    #     feature_columns = [
+    #         'Scl_Longitude', 'Scl_Latitude', 'Date', 'Hour', 'Day_of_Week', 'Is_Weekend',
+    #         'Day_of_Month', 'Day_of_Year', 'Month', 'Quarter', 'Year', 'Week_of_Year',
+    #         'Days_Since_Start', 'Is_Holiday', 'Season_Fall', 'Season_Spring', 'Season_Summer', 'Season_Winter',
+    #         'Crime_count_lag1', 'Crime_count_lag2', 'Crime_count_lag3', 'Crime_count_roll_mean_7d',
+    #         'Hour_sin', 'Hour_cos', 'Month_sin', 'Month_cos',
+    #         'Prediction'  # Used for both parent predictions and current node predictions
+    #     ]
+    #     target_column = 'Crime_count'
+    #
+    #     for node in nodes:
+    #         node_id = node.node_id
+    #         if node_id in self.merged_pairs:
+    #             print(f"Skipping merged node {node_id}")
+    #             continue
+    #
+    #         node_points = self.get_points_for_node(node)
+    #         num_points = len(node_points)
+    #         print(f"Training Node {node_id} ({num_points} points)")
+    #
+    #         if num_points < 1000:
+    #             print(f"Warning: Node {node_id} has {num_points} points, skipping training.")
+    #             continue
+    #
+    #         # Convert points to DataFrame
+    #         data = {col: [getattr(pt, col) for pt in node_points] for col in feature_columns + [target_column, 'index']}
+    #         df = pd.DataFrame(data)
+    #         df = df.sort_values(by='Date')
+    #
+    #         # Step 1: Check parent and map parent predictions
+    #         parent_node = self.get_parent_node(node)
+    #         if parent_node and parent_node.model:
+    #             print(f"Node {node_id} has parent Node {parent_node.node_id} with a trained model.")
+    #             # Map parent's predictions to the current node's points using indices
+    #             parent_points = self.get_points_for_node(parent_node)
+    #             parent_df = pd.DataFrame({
+    #                 'index': [pt.index for pt in parent_points],
+    #                 'Parent_Prediction': [pt.Prediction for pt in parent_points]
+    #             })
+    #             print(
+    #                 f"Parent Node {parent_node.node_id} has {len(parent_points)} points with predictions: {parent_df['Parent_Prediction'].describe().to_dict()}")
+    #             # Merge parent's predictions into the current node's DataFrame
+    #             df = df.merge(parent_df[['index', 'Parent_Prediction']], on='index', how='left')
+    #             df['Prediction'] = df['Parent_Prediction'].fillna(0)
+    #             df = df.drop(columns=['Parent_Prediction'])
+    #             print(f"Node {node_id} Prediction column after parent mapping: {df['Prediction'].describe().to_dict()}")
+    #         else:
+    #             # No parent (e.g., root node), initialize Prediction as 0
+    #             print(f"Node {node_id} has no parent (likely root). Initializing Prediction to 0.")
+    #             df['Prediction'] = 0
+    #             print(f"Node {node_id} Prediction column after initialization: {df['Prediction'].describe().to_dict()}")
+    #
+    #         X = df[feature_columns]
+    #         y = df[target_column]
+    #
+    #         # Step 2: Train or fine-tune the model
+    #         start_time = time.time()
+    #         if parent_node and parent_node.model:
+    #             print(f"Fine-tuning parent model for Node {node_id}...")
+    #             model = parent_node.model
+    #             # Fine-tune from parent's state
+    #             model.fit(X, y, xgb_model=model)
+    #             print(f"Model fine-tuned for Node {node_id} using parent Node {parent_node.node_id}'s model.")
+    #         else:
+    #             print(f"Training new model for Node {node_id} (no parent model available)...")
+    #             model = xgb.XGBRegressor(
+    #                 n_estimators=300,
+    #                 max_depth=6,
+    #                 learning_rate=0.05,
+    #                 random_state=42,
+    #                 n_jobs=-1
+    #             )
+    #             model.fit(X, y)
+    #             print(f"New model trained for Node {node_id}.")
+    #
+    #         # Step 3: Generate and update predictions
+    #         new_predictions = model.predict(X)
+    #         print(f"Generated new predictions for Node {node_id}: {pd.Series(new_predictions).describe().to_dict()}")
+    #         df['Prediction'] = new_predictions
+    #
+    #         # Assign the model to the node
+    #         node.model = model  # Ensure this is the fine-tuned model
+    #
+    #         # Update the node's points with the new predictions
+    #         for i, point in enumerate(node_points):
+    #             point.Prediction = new_predictions[i]
+    #         print(
+    #             f"Updated Prediction attribute in Node {node_id}'s points: {pd.Series([pt.Prediction for pt in node_points]).describe().to_dict()}")
+    #
+    #         end_time = time.time()
+    #         node.ex_time = end_time - start_time
+    #         print(f"Training time for Node {node_id}: {node.ex_time:.2f} seconds")
+    #
+    #         # Step 4: Compute and log feature importance
+    #         importance = model.feature_importances_
+    #         feature_importance = dict(zip(feature_columns, importance))
+    #         print(f"Feature Importance for Node {node_id}: {feature_importance}")
+    #
+    #         # Step 5: Save the model
+    #         # node.model = model
+    #         model_path = os.path.join('model_saved', f"node_{node_id}.pkl")
+    #         joblib.dump(model, model_path)
+    #         print(f"Saved model: {model_path}")
+    #
+    #         # Step 6: Save predictions
+    #         pred_df = df[['index', 'Scl_Longitude', 'Scl_Latitude', target_column, 'Prediction']]
+    #         pred_path = os.path.join('node_pred_dir_csv', f"node_{node_id}_pred.csv")
+    #         pred_df.to_csv(pred_path, index=False)
+    #         print(f"Saved predictions: {pred_path}")
+    #
+    #         node.evaluation_results.append({
+    #             'Node_ID': node_id,
+    #             'Node_Level': node.node_level,
+    #             'Points': num_points,
+    #             'Ex_Time': node.ex_time,
+    #             'Feature_Importance': feature_importance
+    #         })
+
+
+    def get_all_nodes_top_down(self):
+        if self.root is None:
+            raise ValueError("self.root is None. Ensure the quadtree is properly initialized.")
+        nodes = []
+        queue = [self.root]
+        while queue:
+            node = queue.pop(0)
+            nodes.append(node)
+            queue.extend(node.children)
+        return nodes
+
+
+    def get_parent_node(self, node):
+        if self.root is None:
+            raise ValueError("self.root is None. Ensure the quadtree is properly initialized.")
+        current = self.root
+        queue = [current]
+        while queue:
+            parent = queue.pop(0)
+            for child in parent.children:
+                if child.node_id == node.node_id:
+                    return parent
+                queue.append(child)
+        return None
+
+
+
+    # Method to assign validation points to nodes, retaining points in parent nodes
+    def assign_validation_points_to_nodes(self, val_points):
+        # Dictionary to store validation points for each node
+        node_to_val_points = defaultdict(list)
+
+        # Traverse the quadtree for each validation point
+        for point in val_points:
+            # Start from the root and traverse to find the appropriate node
+            current_node = self
+            nodes_in_path = []  # Track nodes in the path from root to leaf
+
+            while True:
+                nodes_in_path.append(current_node)
+                # Check if the point falls within the current node's boundaries using Rectangle.contains_point()
+                if current_node.boundary.contains_point(point.x, point.y):
+                    # If the node has children, traverse deeper
+                    found_child = False
+                    for child in current_node.children:
+                        if child.boundary.contains_point(point.x, point.y):
+                            current_node = child
+                            found_child = True
+                            break
+                    # If no child contains the point or node has no children, stop
+                    if not found_child:
+                        break
+                else:
+                    break  # Point doesn't belong to this subtree
+
+            # Assign the point to all nodes in the path (root to leaf)
+            for node in nodes_in_path:
+                node_to_val_points[node.node_id].append(point)
+
+        return node_to_val_points
+
+    # Updated evaluate_on_validation method with hierarchical point assignment
+    # def evaluate_on_validation(self, val_df):
+    #     # Get all nodes in a top-down order (BFS) to ensure parents are processed before children
+    #     nodes = self.get_all_nodes_top_down()
+    #     feature_columns = [
+    #         'Scl_Longitude', 'Scl_Latitude', 'Date', 'Hour', 'Day_of_Week', 'Is_Weekend',
+    #         'Day_of_Month', 'Day_of_Year', 'Month', 'Quarter', 'Year', 'Week_of_Year',
+    #         'Days_Since_Start', 'Is_Holiday', 'Season_Fall', 'Season_Spring', 'Season_Summer', 'Season_Winter',
+    #         'Crime_count_lag1', 'Crime_count_lag2', 'Crime_count_lag3', 'Crime_count_roll_mean_7d',
+    #         'Hour_sin', 'Hour_cos', 'Month_sin', 'Month_cos', 'Prediction'  # Include Prediction for knowledge transfer
+    #     ]
+    #     target_column = 'Crime_count'
+    #
+    #     # Prepare validation data
+    #     val_df = val_df.copy()
+    #     val_df = val_df.sort_values(by='Date')
+    #     print(f"Total validation points: {len(val_df)}")
+    #
+    #     # Create validation points
+    #     val_points = [
+    #         Point(
+    #             x=row['Longitude'], y=row['Latitude'], index=row['index'], Date=row['Date'], Time=row.get('Time', 0),
+    #             Hour=row['Hour'], Minute=row.get('Minute', 0), Second=row.get('Second', 0),
+    #             Scl_Longitude=row['Scl_Longitude'], Scl_Latitude=row['Scl_Latitude'], Day_of_Week=row['Day_of_Week'],
+    #             Is_Weekend=row['Is_Weekend'], Day_of_Month=row['Day_of_Month'], Day_of_Year=row['Day_of_Year'],
+    #             Month=row['Month'], Quarter=row['Quarter'], Year=row['Year'], Week_of_Year=row['Week_of_Year'],
+    #             Days_Since_Start=row['Days_Since_Start'], Is_Holiday=row['Is_Holiday'], Season_Fall=row['Season_Fall'],
+    #             Season_Spring=row['Season_Spring'], Season_Summer=row['Season_Summer'],
+    #             Season_Winter=row['Season_Winter'],
+    #             Crime_count=row['Crime_count'], Prediction=0, Crime_count_lag1=row['Crime_count_lag1'],
+    #             Crime_count_lag2=row['Crime_count_lag2'], Crime_count_lag3=row['Crime_count_lag3'],
+    #             Crime_count_roll_mean_7d=row['Crime_count_roll_mean_7d'],
+    #             Hour_sin=row['Hour_sin'], Hour_cos=row['Hour_cos'],
+    #             Month_sin=row['Month_sin'], Month_cos=row['Month_cos']
+    #         ) for _, row in val_df.iterrows()
+    #     ]
+    #
+    #     # Map validation points to nodes, retaining points in parent nodes
+    #     node_val_points = self.assign_validation_points_to_nodes(val_points)
+    #     print(
+    #         f"Validation points assigned to nodes: {sum(len(points) for points in node_val_points.values())} points across {sum(1 for points in node_val_points.values() if points)} nodes")
+    #
+    #     # Process nodes top-down to propagate predictions
+    #     for node in nodes:
+    #         node_id = node.node_id
+    #         if node_id in self.merged_pairs or not node.model:
+    #             print(f"Skipping Node {node_id} (merged or no model).")
+    #             continue
+    #
+    #         val_node_points = node_val_points.get(node_id, [])
+    #         if not val_node_points:
+    #             print(f"Warning: Node {node_id} has no validation points, skipping evaluation.")
+    #             continue
+    #
+    #         print(f"Evaluating Node {node_id} with {len(val_node_points)} validation points.")
+    #
+    #         # Convert validation points to DataFrame
+    #         data = {
+    #             col: [getattr(pt, col) for pt in val_node_points]
+    #             for col in feature_columns + [target_column, 'index']
+    #         }
+    #         val_node_df = pd.DataFrame(data)
+    #
+    #         # Map parent predictions
+    #         parent_node = self.get_parent_node(node)
+    #         if parent_node and parent_node.model and parent_node.node_id in node_val_points:
+    #             print(f"Validation Node {node_id}: Mapping predictions from Parent Node {parent_node.node_id}.")
+    #             # Get parent's validation points and predictions
+    #             parent_val_points = node_val_points.get(parent_node.node_id, [])
+    #             if parent_val_points:
+    #                 parent_data = {
+    #                     'index': [pt.index for pt in parent_val_points],
+    #                     'Prediction': [pt.Prediction for pt in parent_val_points]
+    #                 }
+    #                 parent_df = pd.DataFrame(parent_data)
+    #                 # Predict for parent if not already done
+    #                 if parent_df['Prediction'].eq(0).all():
+    #                     print(f"Validation Node {parent_node.node_id}: Generating predictions for parent.")
+    #                     parent_X = pd.DataFrame({
+    #                         col: [getattr(pt, col) for pt in parent_val_points]
+    #                         for col in feature_columns
+    #                     })
+    #                     parent_predictions = parent_node.model.predict(parent_X)
+    #                     parent_df['Prediction'] = parent_predictions
+    #                     # Update parent validation points
+    #                     for i, pt in enumerate(parent_val_points):
+    #                         pt.Prediction = parent_predictions[i]
+    #                 # Merge parent's predictions into the current node's DataFrame
+    #                 val_node_df = val_node_df.merge(parent_df[['index', 'Prediction']], on='index', how='left',
+    #                                                 suffixes=('', '_parent'))
+    #                 val_node_df['Prediction'] = val_node_df['Prediction_parent'].fillna(0)
+    #                 val_node_df = val_node_df.drop(columns=['Prediction_parent'])
+    #                 print(
+    #                     f"Validation Node {node_id}: Parent predictions mapped: {val_node_df['Prediction'].describe().to_dict()}")
+    #         else:
+    #             print(f"Validation Node {node_id}: No parent or parent has no points, initializing Prediction to 0.")
+    #             val_node_df['Prediction'] = 0
+    #
+    #         X_val = val_node_df[feature_columns]
+    #         y_val = val_node_df[target_column]
+    #
+    #         # Inside the for loop, after creating val_node_df
+    #         print(f"Validation Node {node_id}: Crime_count stats: {y_val.describe().to_dict()}")
+    #
+    #         # Predict using the node's model
+    #         print(f"Validation Node {node_id}: Using trained model from training phase to predict.")
+    #         y_pred = node.model.predict(X_val)
+    #
+    #         # Feature importance
+    #         feature_importance = node.model.feature_importances_
+    #         importance_df = pd.DataFrame({
+    #             'Feature': feature_columns,
+    #             'Importance': feature_importance
+    #         }).sort_values(by='Importance', ascending=False)
+    #         print(f"Validation Node {node_id}: Feature Importance:\n{importance_df.head(5)}")
+    #
+    #         # Verify the in-memory model matches the saved model
+    #         saved_model = xgb.XGBRegressor()
+    #         saved_model.load_model(f'model_saved/node_{node_id}.model')
+    #         saved_model_pred = saved_model.predict(X_val)
+    #
+    #         # Debug: Print the predictions and their differences
+    #         print(f"Validation Node {node_id}: y_pred (in-memory): {y_pred[:5]}")
+    #         print(f"Validation Node {node_id}: saved_model_pred: {saved_model_pred[:5]}")
+    #         print(f"Validation Node {node_id}: Differences: {(y_pred - saved_model_pred)[:5]}")
+    #
+    #         # Assert with adjusted tolerance
+    #         assert np.allclose(y_pred, saved_model_pred, rtol=1e-3,
+    #                            atol=1e-5), f"Model predictions for Node {node_id} do not match saved model."
+    #         print(f"Validation Node {node_id}: Verified that in-memory model matches saved model.")
+    #
+    #         # Update the validation points with predictions
+    #         for i, pt in enumerate(val_node_points):
+    #             pt.Prediction = y_pred[i]
+    #
+    #         # Compute RMSE and MAE on the scaled range [0, 1]
+    #         rmse_scaled = mean_squared_error(y_val, y_pred, squared=False)
+    #         mae_scaled = mean_absolute_error(y_val, y_pred)
+    #
+    #         # Inverse-transform predictions and actuals to original scale for MAPE/SMAPE
+    #         y_pred_original = np.expm1(self.init_quadtree_instance.scaler.inverse_transform(
+    #             y_pred.reshape(-1, 1)).flatten())
+    #         y_val_original = np.expm1(self.init_quadtree_instance.scaler.inverse_transform(
+    #             y_val.values.reshape(-1, 1)).flatten())
+    #
+    #         # Compute R2 on the scaled range (same as original scale, as R2 is scale-invariant)
+    #         r2 = r2_score(y_val, y_pred)
+    #         n = len(y_val)
+    #         p = len(feature_columns)
+    #         adj_r2 = 1 - (1 - r2) * (n - 1) / (n - p - 1) if n > p + 1 else 0
+    #
+    #         # Compute MAPE and SMAPE on the original scale
+    #         mape = np.mean(np.abs((y_val_original - y_pred_original) / y_val_original)) * 100 if np.any(
+    #             y_val_original != 0) else 0
+    #         smape = np.mean(2 * np.abs(y_pred_original - y_val_original) / (
+    #                     np.abs(y_val_original) + np.abs(y_pred_original))) * 100 if np.any(
+    #             np.abs(y_val_original) + np.abs(y_pred_original) != 0) else 0
+    #
+    #         print(
+    #             f"Validation Node {node_id} - RMSE (scaled): {rmse_scaled:.4f}, MAE (scaled): {mae_scaled:.4f}, R2: {r2:.2f}, AdjR2: {adj_r2:.2f}, MAPE: {mape:.2f}%, SMAPE: {smape:.2f}%")
+    #
+    #         # Update evaluation results with validation metrics
+    #         if node.evaluation_results:
+    #             node.evaluation_results[0].update({
+    #                 'Val_Points': len(val_node_points),
+    #                 'Val_RMSE': rmse_scaled,  # Store scaled RMSE
+    #                 'Val_MAE': mae_scaled,  # Store scaled MAE
+    #                 'Val_R2': r2,
+    #                 'Val_AdjR2': adj_r2,
+    #                 'Val_MAPE': mape,
+    #                 'Val_SMAPE': smape
+    #             })
+    #
+    #     # Aggregate and save evaluation results
+    #     eval_df = pd.DataFrame([res for node in nodes for res in node.evaluation_results])
+    #     evaluated_nodes = sum(
+    #         1 for node in nodes if node.evaluation_results and 'Val_RMSE' in node.evaluation_results[0])
+    #     print(f"Number of evaluated nodes: {evaluated_nodes}")
+    #     if not eval_df.empty:
+    #         avg_rmse = eval_df['Val_RMSE'].mean()
+    #         avg_mae = eval_df['Val_MAE'].mean()
+    #         avg_r2 = eval_df['Val_R2'].mean()
+    #         avg_adj_r2 = eval_df['Val_AdjR2'].mean()
+    #         avg_mape = eval_df['Val_MAPE'].mean()
+    #         avg_smape = eval_df['Val_SMAPE'].mean()
+    #         avg_ex_time = eval_df['Ex_Time'].mean()
+    #         print(
+    #             f"Average Validation RMSE: {avg_rmse:.2f}, MAE: {avg_mae:.2f}, R2: {avg_r2:.2f}, AdjR2: {avg_adj_r2:.2f}, MAPE: {avg_mape:.2f}%, SMAPE: {avg_smape:.2f}%, Avg Ex_Time: {avg_ex_time:.2f}s")
+    #         eval_df.to_csv('output_csv/quadtree_model_eval.csv', index=False)
+    #         print("Saved evaluation results: output_csv/quadtree_model_eval.csv")
+
     def evaluate_on_validation(self, val_df):
-        leaf_nodes = self.get_leaf_nodes()
+        # Get all nodes in a top-down order (BFS) to ensure parents are processed before children
+        nodes = self.get_all_nodes_top_down()
         feature_columns = [
             'Scl_Longitude', 'Scl_Latitude', 'Date', 'Hour', 'Day_of_Week', 'Is_Weekend',
             'Day_of_Month', 'Day_of_Year', 'Month', 'Quarter', 'Year', 'Week_of_Year',
             'Days_Since_Start', 'Is_Holiday', 'Season_Fall', 'Season_Spring', 'Season_Summer', 'Season_Winter',
             'Crime_count_lag1', 'Crime_count_lag2', 'Crime_count_lag3', 'Crime_count_roll_mean_7d',
-            'Hour_sin', 'Hour_cos', 'Month_sin', 'Month_cos'
+            'Hour_sin', 'Hour_cos', 'Month_sin', 'Month_cos', 'Prediction'
         ]
         target_column = 'Crime_count'
 
         # Prepare validation data
         val_df = val_df.copy()
         val_df = val_df.sort_values(by='Date')
-        # val_df['Crime_count_lag1'] = val_df[target_column].shift(1).fillna(val_df[target_column].mean())
+        print(f"Total validation points: {len(val_df)}")
 
-        # Assign each validation point to a leaf node
+        # Create validation points
         val_points = [
             Point(
                 x=row['Longitude'], y=row['Latitude'], index=row['index'], Date=row['Date'], Time=row.get('Time', 0),
@@ -770,23 +1314,24 @@ class Quadtree:
             ) for _, row in val_df.iterrows()
         ]
 
-        # Map validation points to leaf nodes
-        node_val_points = {node.node_id: [] for node in leaf_nodes}
-        for point in val_points:
-            node = self.find_leaf_node(point)
-            if node and node.node_id not in self.merged_pairs:
-                node_val_points[node.node_id].append(point)
+        # Map validation points to nodes, retaining points in parent nodes
+        node_val_points = self.assign_validation_points_to_nodes(val_points)
+        print(
+            f"Validation points assigned to nodes: {sum(len(points) for points in node_val_points.values())} points across {sum(1 for points in node_val_points.values() if points)} nodes")
 
-        # Evaluate each node on its validation points
-        for node in leaf_nodes:
+        # Process nodes top-down to propagate predictions
+        for node in nodes:
             node_id = node.node_id
             if node_id in self.merged_pairs or not node.model:
+                print(f"Skipping Node {node_id} (merged or no model).")
                 continue
 
             val_node_points = node_val_points.get(node_id, [])
             if not val_node_points:
                 print(f"Warning: Node {node_id} has no validation points, skipping evaluation.")
                 continue
+
+            print(f"Evaluating Node {node_id} with {len(val_node_points)} validation points.")
 
             # Convert validation points to DataFrame
             data = {
@@ -795,37 +1340,134 @@ class Quadtree:
             }
             val_node_df = pd.DataFrame(data)
 
+            # Step 1: Check parent and map parent predictions
+            parent_node = self.get_parent_node(node)
+            if parent_node and parent_node.model and parent_node.node_id in node_val_points:
+                print(f"Validation Node {node_id}: Mapping predictions from Parent Node {parent_node.node_id}.")
+                parent_val_points = node_val_points.get(parent_node.node_id, [])
+                if parent_val_points:
+                    # Generate predictions for parent validation points
+                    parent_X = pd.DataFrame({
+                        col: [getattr(pt, col) for pt in parent_val_points]
+                        for col in feature_columns
+                    })
+                    parent_predictions = parent_node.model.predict(parent_X)
+                    parent_df = pd.DataFrame({
+                        'index': [pt.index for pt in parent_val_points],
+                        'Prediction': parent_predictions
+                    })
+                    print(
+                        f"Validation Node {parent_node.node_id}: Parent predictions: {parent_df['Prediction'].describe().to_dict()}")
+                    # Update parent validation points
+                    for i, pt in enumerate(parent_val_points):
+                        pt.Prediction = parent_predictions[i]
+                    # Merge parent's predictions into the current node's DataFrame
+                    val_node_df = val_node_df.merge(parent_df[['index', 'Prediction']], on='index', how='left',
+                                                    suffixes=('', '_parent'))
+                    val_node_df['Prediction'] = val_node_df['Prediction_parent'].fillna(0)
+                    val_node_df = val_node_df.drop(columns=['Prediction_parent'])
+                    print(
+                        f"Validation Node {node_id}: Prediction column after parent mapping: {val_node_df['Prediction'].describe().to_dict()}")
+            else:
+                # No parent (e.g., root node), load the saved baseline model
+                print(f"Validation Node {node_id}: No parent, loading saved baseline model for Prediction.")
+                baseline_model_path = os.path.join('model_saved', 'baseline_model.model')
+                if os.path.exists(baseline_model_path):
+                    baseline_model = xgb.XGBRegressor()
+                    baseline_model.load_model(baseline_model_path)
+                    X_baseline = val_node_df[feature_columns].copy()
+                    X_baseline['Prediction'] = 0
+                    val_node_df['Prediction'] = baseline_model.predict(X_baseline)
+                    print(
+                        f"Validation Node {node_id} Prediction column after baseline initialization: {val_node_df['Prediction'].describe().to_dict()}")
+                else:
+                    print(f"Baseline model not found at {baseline_model_path}. Initializing Prediction to 0.")
+                    val_node_df['Prediction'] = 0
+
+            # Scale Prediction to match training
+            scaler = StandardScaler()
+            val_node_df['Prediction'] = scaler.fit_transform(val_node_df[['Prediction']])
+
             X_val = val_node_df[feature_columns]
             y_val = val_node_df[target_column]
 
+            # Inside the for loop, after creating val_node_df
+            print(f"Validation Node {node_id}: Crime_count stats: {y_val.describe().to_dict()}")
+
             # Predict using the node's model
+            print(f"Validation Node {node_id}: Using trained model from training phase to predict.")
             y_pred = node.model.predict(X_val)
 
-            # Compute metrics
-            rmse = mean_squared_error(y_val, y_pred, squared=False)
-            mae = mean_absolute_error(y_val, y_pred)
+            # Feature importance
+            feature_importance = node.model.feature_importances_
+            importance_df = pd.DataFrame({
+                'Feature': feature_columns,
+                'Importance': feature_importance
+            }).sort_values(by='Importance', ascending=False)
+            print(f"Validation Node {node_id}: Feature Importance:\n{importance_df.head(5)}")
+
+            # Verify the in-memory model matches the saved model
+            saved_model = xgb.XGBRegressor()
+            saved_model.load_model(f'model_saved/node_{node_id}.model')
+            saved_model_pred = saved_model.predict(X_val)
+
+            # Debug: Print the predictions and their differences
+            print(f"Validation Node {node_id}: y_pred (in-memory): {y_pred[:5]}")
+            print(f"Validation Node {node_id}: saved_model_pred: {saved_model_pred[:5]}")
+            print(f"Validation Node {node_id}: Differences: {(y_pred - saved_model_pred)[:5]}")
+
+            # Assert with adjusted tolerance
+            assert np.allclose(y_pred, saved_model_pred, rtol=1e-3,
+                               atol=1e-5), f"Model predictions for Node {node_id} do not match saved model."
+            print(f"Validation Node {node_id}: Verified that in-memory model matches saved model.")
+
+            # Update the validation points with predictions
+            for i, pt in enumerate(val_node_points):
+                pt.Prediction = y_pred[i]
+
+            # Compute RMSE and MAE on the scaled range [0, 1]
+            rmse_scaled = mean_squared_error(y_val, y_pred, squared=False)
+            mae_scaled = mean_absolute_error(y_val, y_pred)
+
+            # Inverse-transform predictions and actuals to original scale for MAPE/SMAPE
+            y_pred_original = np.expm1(self.init_quadtree_instance.scaler.inverse_transform(
+                y_pred.reshape(-1, 1)).flatten())
+            y_val_original = np.expm1(self.init_quadtree_instance.scaler.inverse_transform(
+                y_val.values.reshape(-1, 1)).flatten())
+
+            # Compute R2 on the scaled range (same as original scale, as R2 is scale-invariant)
             r2 = r2_score(y_val, y_pred)
             n = len(y_val)
             p = len(feature_columns)
             adj_r2 = 1 - (1 - r2) * (n - 1) / (n - p - 1) if n > p + 1 else 0
-            mape = np.mean(np.abs((y_val - y_pred) / y_val)) * 100
-            smape = np.mean(2 * np.abs(y_pred - y_val) / (np.abs(y_val) + np.abs(y_pred))) * 100
 
-            print(f"Validation Node {node_id} - RMSE: {rmse:.2f}, MAE: {mae:.2f}, R2: {r2:.2f}, AdjR2: {adj_r2:.2f}, MAPE: {mape:.2f}%, SMAPE: {smape:.2f}%")
+            # Compute MAPE and SMAPE on the original scale
+            mape = np.mean(np.abs((y_val_original - y_pred_original) / y_val_original)) * 100 if np.any(
+                y_val_original != 0) else 0
+            smape = np.mean(2 * np.abs(y_pred_original - y_val_original) / (
+                    np.abs(y_val_original) + np.abs(y_pred_original))) * 100 if np.any(
+                np.abs(y_val_original) + np.abs(y_pred_original) != 0) else 0
+
+            print(
+                f"Validation Node {node_id} - RMSE (scaled): {rmse_scaled:.4f}, MAE (scaled): {mae_scaled:.4f}, R2: {r2:.2f}, AdjR2: {adj_r2:.2f}, MAPE: {mape:.2f}%, SMAPE: {smape:.2f}%")
 
             # Update evaluation results with validation metrics
-            node.evaluation_results[0].update({
-                'Val_Points': len(val_node_points),
-                'Val_RMSE': rmse,
-                'Val_MAE': mae,
-                'Val_R2': r2,
-                'Val_AdjR2': adj_r2,
-                'Val_MAPE': mape,
-                'Val_SMAPE': smape
-            })
+            if node.evaluation_results:
+                node.evaluation_results[0].update({
+                    'Val_Points': len(val_node_points),
+                    'Val_RMSE': rmse_scaled,
+                    'Val_MAE': mae_scaled,
+                    'Val_R2': r2,
+                    'Val_AdjR2': adj_r2,
+                    'Val_MAPE': mape,
+                    'Val_SMAPE': smape
+                })
 
         # Aggregate and save evaluation results
-        eval_df = pd.DataFrame([res for node in leaf_nodes for res in node.evaluation_results])
+        eval_df = pd.DataFrame([res for node in nodes for res in node.evaluation_results])
+        evaluated_nodes = sum(
+            1 for node in nodes if node.evaluation_results and 'Val_RMSE' in node.evaluation_results[0])
+        print(f"Number of evaluated nodes: {evaluated_nodes}")
         if not eval_df.empty:
             avg_rmse = eval_df['Val_RMSE'].mean()
             avg_mae = eval_df['Val_MAE'].mean()
@@ -834,7 +1476,8 @@ class Quadtree:
             avg_mape = eval_df['Val_MAPE'].mean()
             avg_smape = eval_df['Val_SMAPE'].mean()
             avg_ex_time = eval_df['Ex_Time'].mean()
-            print(f"Average Validation RMSE: {avg_rmse:.2f}, MAE: {avg_mae:.2f}, R2: {avg_r2:.2f}, AdjR2: {avg_adj_r2:.2f}, MAPE: {avg_mape:.2f}%, SMAPE: {avg_smape:.2f}%, Avg Ex_Time: {avg_ex_time:.2f}s")
+            print(
+                f"Average Validation RMSE: {avg_rmse:.2f}, MAE: {avg_mae:.2f}, R2: {avg_r2:.2f}, AdjR2: {avg_adj_r2:.2f}, MAPE: {avg_mape:.2f}%, SMAPE: {avg_smape:.2f}%, Avg Ex_Time: {avg_ex_time:.2f}s")
             eval_df.to_csv('output_csv/quadtree_model_eval.csv', index=False)
             print("Saved evaluation results: output_csv/quadtree_model_eval.csv")
 
@@ -1126,9 +1769,6 @@ class Quadtree:
             "density_stats": density_stats
         }
 
-# # Add the new methods to the Quadtree class
-# Quadtree.estimate_memory_usage = estimate_memory_usage
-# Quadtree.evaluate_quadtree = evaluate_quadtree
 
     @staticmethod
     def datetime_to_unix_timestamps(df):
@@ -1138,10 +1778,20 @@ class Quadtree:
         df.loc[:, 'Date'] = df['Date'].astype('int64')
         return df['Date']
 
+    # @staticmethod
+    # def min_max_scale_values(df, col_name):
+    #     df = df.copy()
+    #     col_counts = df[col_name].values.reshape(-1, 1)
+    #     min_max_scaler = MinMaxScaler(feature_range=(100, 110))  # 100, 105
+    #     df.loc[:, col_name] = min_max_scaler.fit_transform(col_counts) # .astype(int)
+    #     return df[col_name]
+
     @staticmethod
     def min_max_scale_values(df, col_name):
         df = df.copy()
+        # Apply log1p to handle skewness
+        df[col_name] = np.log1p(df[col_name])
         col_counts = df[col_name].values.reshape(-1, 1)
         min_max_scaler = MinMaxScaler(feature_range=(100, 105))
-        df.loc[:, col_name] = min_max_scaler.fit_transform(col_counts).astype(int)
-        return df[col_name]
+        df.loc[:, col_name] = min_max_scaler.fit_transform(col_counts)  # Remove .astype(int)
+        return df[col_name], min_max_scaler

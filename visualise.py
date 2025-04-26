@@ -9,6 +9,7 @@ import warnings
 import logging
 import json
 import contextily as ctx  # For adding a background map
+import ast
 
 warnings.filterwarnings('ignore')
 
@@ -472,7 +473,7 @@ class Visualise:
         importances = [0.781, 0.167, 0.055, 0.00051, 0.00035]
 
         # Create bar plot
-        plt.figure(figsize=(8, 5))
+        plt.figure(figsize=(3, 3))
         bars = plt.bar(features, importances, color='skyblue', edgecolor='black')
 
         # Add labels on top of bars
@@ -492,3 +493,145 @@ class Visualise:
         plt.savefig(f"{output_dir_img}/feature_importance.png", bbox_inches='tight', dpi=500)
         plt.savefig(f"{output_dir_img}/feature_importance.pdf", bbox_inches='tight')
         plt.close()
+
+    @staticmethod
+    def plot_comparative_analysis(method_data, metrics=None):
+        if not method_data:
+            print("No data available to plot.")
+            return
+
+        # Get the summary DataFrame
+        df = method_data['Summary']
+
+        # Define the desired order of frameworks
+        framework_order = ['SARIMA', 'BILSTM', 'SMID-LNPM', 'SMID-REPM', 'AMB-LNPM', 'AMB-REPM']
+        df['Frameworks'] = pd.Categorical(df['Frameworks'], categories=framework_order, ordered=True)
+        df = df.sort_values('Frameworks')
+
+        # Define colors for each framework
+        framework_colors = {
+            'SARIMA': 'crimson',
+            'BILSTM': 'orange',
+            'SMID-LNPM': 'pink',
+            'SMID-REPM': 'purple',
+            'AMB-LNPM': 'turquoise',
+            'AMB-REPM': 'green'
+        }
+        colors = [framework_colors[framework] for framework in df['Frameworks']]
+
+        # Default metrics to plot if none provided
+        if metrics is None:
+            metrics = ['Avg_MAE', 'Avg_RMSE', 'Avg_Adj_R2', 'Avg_MAPE', 'Ex_Time']
+
+        # Normalize metric names for plot titles and file names
+        normalized_metrics = [m.replace('Avg_', '').replace('_', '') for m in metrics]
+
+        # Define output directory
+        output_dir_img = "output_img"
+        output_subdir = os.path.join(output_dir_img, "various_frameworks")
+
+        # Create the directory if it doesn't exist
+        if not os.path.exists(output_subdir):
+            os.makedirs(output_subdir)
+
+        # Create a separate bar plot for each metric
+        for metric, norm_metric in zip(metrics, normalized_metrics):
+            plt.figure(figsize=(3, 3))
+
+            # Plot a bar chart with framework-specific colors
+            if metric in df.columns:
+                bars = plt.bar(range(len(df['Frameworks'])), df[metric], color=colors, width=0.6)
+                # Add values on top of each bar
+                for bar in bars:
+                    yval = bar.get_height()
+                    plt.text(bar.get_x() + bar.get_width() / 2, yval, f'{yval:.2f}', ha='center', va='bottom')
+            else:
+                print(f"Metric {metric} not found in summary data")
+
+            # Customize the plot
+            plt.ylabel(f"{norm_metric} (min)" if norm_metric == "ExTime" else norm_metric)
+            # plt.grid(True, axis='y')
+            plt.xticks([])  # Remove framework names from x-axis
+
+            # Add legend only for RMSE
+            if norm_metric == 'RMSE':
+                plt.legend(handles=[plt.Rectangle((0, 0), 1, 1, color=framework_colors[fw]) for fw in framework_order],
+                           labels=framework_order, loc='best', fontsize='small')
+
+            # Save the plot as a separate file
+            plt.savefig(f"{output_subdir}/{norm_metric}_framework.png", bbox_inches='tight', dpi=500)
+            plt.savefig(f"{output_subdir}/{norm_metric}_framework.pdf", bbox_inches='tight')
+            plt.close()
+
+    @staticmethod
+    def plot_feature_importance(df, features):
+        # Dictionary to store feature importance data
+        feature_importance_data = {feature: [] for feature in features}
+
+        # Extract feature importance from each row
+        for idx, row in df.iterrows():
+            try:
+                # Parse Feature_Importance (assuming it's a string like "{'Prediction': 0.25, ...}")
+                importance_dict = ast.literal_eval(row['Feature_Importance'])
+                for feature in features:
+                    if feature in importance_dict:
+                        feature_importance_data[feature].append(importance_dict[feature])
+                    else:
+                        print(f"Feature {feature} not found in row {idx}: {importance_dict}")
+            except (ValueError, KeyError, TypeError) as e:
+                print(f"Error parsing Feature_Importance in row {idx}: {e}")
+                continue
+
+        # Compute the average feature importance
+        avg_feature_importance = {}
+        for feature in features:
+            if feature_importance_data[feature]:
+                avg_feature_importance[feature] = sum(feature_importance_data[feature]) / len(
+                    feature_importance_data[feature])
+                print(f"Average importance for {feature}: {avg_feature_importance[feature]}")
+            else:
+                avg_feature_importance[feature] = 0.0
+                print(f"No importance data for {feature}, setting to 0.0")
+
+        # Create a DataFrame for the feature importance table
+        table_data = {
+            'Feature': features,
+            'AMB-REPM Importance': [avg_feature_importance[feature] for feature in features]
+        }
+        feature_table_df = pd.DataFrame(table_data)
+
+        # Save the table to a CSV file
+        csv_folder = "output_csv"
+        output_file = os.path.join(csv_folder, "feature_importance_table.csv")
+        feature_table_df.to_csv(output_file, index=False)
+        print(f"Saved feature importance table to {output_file}")
+
+        # Create a horizontal bar plot for feature importance (only non-zero values)
+        non_zero_features = {k: v for k, v in avg_feature_importance.items() if v > 0}
+        if not non_zero_features:
+            print("No non-zero feature importances to plot.")
+            return
+
+        plt.figure(figsize=(3, 3))
+        bars = plt.barh(list(non_zero_features.keys()), list(non_zero_features.values()), color='green')
+        plt.xlabel('Average Feature Importance')
+        plt.title('Feature Importance for AMB-REPM')
+        plt.tight_layout()
+
+        # Add values on the bars
+        for bar in bars:
+            width = bar.get_width()
+            plt.text(width, bar.get_y() + bar.get_height() / 2, f'{width:.2f}', ha='left', va='center')
+
+        # Define output directory for plots
+        output_dir_img = "output_img"
+        output_subdir = os.path.join(output_dir_img, "feature_analysis")
+        if not os.path.exists(output_subdir):
+            os.makedirs(output_subdir)
+
+        # Save the plot
+        plt.savefig(os.path.join(output_subdir, "feature_importance_plot.png"), bbox_inches='tight', dpi=500)
+        plt.savefig(os.path.join(output_subdir, "feature_importance_plot.pdf"), bbox_inches='tight')
+        plt.close()
+        print(f"Saved feature importance plot to {output_subdir}")
+
